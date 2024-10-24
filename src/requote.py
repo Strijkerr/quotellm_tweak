@@ -22,7 +22,7 @@ This meaning is conveyed exclusively by certain parts of the original text:
 
 def main():
 
-    argparser = argparse.ArgumentParser(description='Qsep')
+    argparser = argparse.ArgumentParser(description='CLI for matching paraphrases of components of a text, to literal quotes in that text.')
     argparser.add_argument('file', nargs='?', type=argparse.FileType('r'), default=sys.stdin, help='Input file with pairs original,rephrased per line (csv); when omitted read from stdin.')
     argparser.add_argument('--prompt', required=False, type=argparse.FileType('r'), default=None, help='.jsonl file with system prompt, prompt template, and examples (keys original, rephrased (list), response)')
     argparser.add_argument('--model', required=False, default="unsloth/llama-3-70b-bnb-4bit", type=str)
@@ -56,7 +56,8 @@ def main():
         prompt = prompt_template.format(original=original_text, rephrased=rephrased)
         original_text = original_text.replace('"', '\"')  # to avoid JSON problems
 
-        logging.debug(f'Original: {original_text}\nRephrased: {rephrased}')
+        logging.debug(f'Original:  {original_text}')
+        logging.debug(f'Rephrased: {rephrased}')
 
         inputs = tokenizer.encode(prompt, return_tensors="pt").to('cuda')
         lp = ExtractiveGeneration(original_text, tokenizer, prompt_length=inputs.shape[-1])
