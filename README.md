@@ -10,7 +10,9 @@ This makes available the `quotellm` module, from which you can import the class 
 
 It also makes available the `requote` command-line interface.
 
-_Caveat: Currently built for use with `unsloth/llama-3-70b-bnb-4bit`, though any model with the same tokenization strategy should work. Other models might break, due to the rather crude way in which JSON output is currently guaranteed._
+_Caveat 1: Quotes are assumed to potentially consist of multiple spans, i.e., be discontinuous._
+
+_Caveat 2: Currently built for use with `unsloth/llama-3-70b-bnb-4bit`, though any model with the same tokenization strategy should work. Other models might break, due to the rather crude way in which JSON output is currently guaranteed._
 
 ## Example of command-line interface `requote`:
 
