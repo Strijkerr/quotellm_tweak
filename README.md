@@ -13,11 +13,13 @@ It also makes available the `requote` command-line interface.
 
 ## Example of command-line interface `requote`:
 
+Assuming a `.csv` file containing `original,rephrased` pairs, and a file `prompt.json` with keys `system_prompt`, `prompt_template` and `examples`, you can do:
+
 ```bash
 $ requote example.csv --prompt prompt.json
 ```
 
-This will output, for each input line, a JSON list of strings (quotes). 
+This will output, for each input line, a JSON list of extracted quotes. 
 
 The above example presupposes files like the following:
 
