@@ -200,8 +200,8 @@ def find_spans_for_quote(original: str, multiquote: list[str], must_exist=True, 
     >>> find_spans_for_quote("the quick brown fox jumped over the quick brown dog onto another fox", ["the hairy duck"], must_exist=False)
     [{'start': None, 'end': None, 'text': 'the hairy duck'}]
     """
-    logging.debug(f'{original} / {multiquote}')
     matches = (re.finditer(re.escape(quote), original) for quote in multiquote)
+
     candidate_multimatches = []
     for multimatch in itertools.product(*matches):
         if any(m1.span()[0] >= m2.span()[0] for m1, m2 in zip(multimatch, multimatch[1:])):
@@ -211,17 +211,20 @@ def find_spans_for_quote(original: str, multiquote: list[str], must_exist=True, 
         if any(m1.span()[1] == m2.span()[0] - 1 for m1, m2 in zip(multimatch, multimatch[1:])):
             continue    # spans directly adjacent (not allowed by quotellm)
         candidate_multimatches.append(multimatch)
+
     if not candidate_multimatches:
         if must_exist:
             raise ValueError('No quote found.')
         else:
             logging.warning('No quote found, returning dict with start/end None.')
             return [{'start': None, 'end': None, 'text': text} for text in multiquote]
+
     if len(candidate_multimatches) > 1:
         if must_unique:
             raise ValueError('No unique quote found.')
         else:
             logging.warning('No unique quote found, going with the first, shortest distance one.')
+
     closest_multimatch = min(candidate_multimatches, key=lambda multimatch: max(m.span()[1] for m in multimatch) - min(m.span()[0] for m in multimatch))
     return [{'start': m.span()[0], 'end': m.span()[1], 'text': m.group()} for m in closest_multimatch]
 
