@@ -1,7 +1,7 @@
 import argparse
 import sys
 from transformers import LogitsProcessorList, AutoModelForCausalLM, AutoTokenizer
-from quote_utils import LogitsProcessorForMultiQuote
+from quote_utils import LogitsProcessorForMultiQuote, find_spans_for_quote
 import csv
 import logging
 import functools
@@ -63,22 +63,26 @@ def main():
     argparser = argparse.ArgumentParser(description='CLI for matching paraphrases of components of a text, to literal quotes in that text.')
     argparser.add_argument('file', nargs='?', type=argparse.FileType('r'), default=sys.stdin, help='Input file with pairs original,rephrased per line (csv); when omitted read from stdin.')
     argparser.add_argument('--prompt', required=False, type=argparse.FileType('r'), default=None, help='.jsonl file with system prompt, prompt template, and examples (keys original, rephrased (list), response)')
+    argparser.add_argument('--noshortcut', action='store_true', help='To *not* bypass the LLM, even if the rephrase is already a literal quote.')
     argparser.add_argument('--model', required=False, default="unsloth/llama-3-70b-bnb-4bit", type=str)
     argparser.add_argument('--temp', required=False, type=float, help='Temperature', default=None)
     argparser.add_argument('--topp', required=False, type=float, help='Sample only from top p portion of probability distribution', default=None)
     argparser.add_argument('--topk', required=False, type=int, help='Sample only from top k tokens with max probability', default=None)
-    argparser.add_argument('--beams', required=False, type=int, help='number of beams to search (does not work well with constrained generation)', default=None)
+    argparser.add_argument('--beams', required=False, type=int, help='number of beams to search (does not work well with constrained generation)', default=1)
     argparser.add_argument('-v', '--verbose', action='store_true', help='To show debug messages.')
     args = argparser.parse_args()
 
-    if args.beams:
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+
+    if args.model != 'unsloth/llama-3-70b-bnb-4bit':
+        logging.warning('Not sure if it works with this model, but let\'s try! If it has a similar vocabulary, and big enough context window, it should be fine...')
+
+    if args.beams > 1:
         logging.warning('Beams may not work very well with constrained generation.')
 
     if not args.prompt:
         logging.warning('Are you sure you don\'t want to specify a custom prompt .json file (--prompt), perhaps containing few-shot examples?')
-
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
 
     prompt_template = create_prompt_template(json.load(args.prompt) if args.prompt else None)
 
@@ -89,40 +93,39 @@ def main():
     generate = functools.partial(model.generate, max_new_tokens=200, do_sample=args.temp is not None,
                                  num_beams=args.beams, temperature=args.temp, top_k=args.topk, top_p=args.topp)
 
-    for n, (original_text, rephrased) in enumerate(csv.reader(args.file)):
+    n_shortcuts_used = 0
 
-        prompt = prompt_template.format(original=original_text, rephrased=rephrased)
-        original_text = original_text.replace('"', '\"')  # to avoid JSON problems
+    for n, (original_text, rephrased) in enumerate(csv.reader(args.file)):
 
         logging.debug(f'Original:  {original_text}')
         logging.debug(f'Rephrased: {rephrased}')
 
+        if not args.noshortcut:
+            try:
+                result_with_spans = find_spans_for_quote(original_text.lower(), [rephrased.lower()], must_exist=True, must_unique=False)
+            except ValueError:
+                pass
+            else:
+                n_shortcuts_used += 1
+                logging.info(f'Shortcut used!')
+                print(json.dumps(result_with_spans))
+                continue
+
+        prompt = prompt_template.format(original=original_text, rephrased=rephrased)
+        original_text = original_text.replace('"', '\"')  # to avoid JSON problems
+
         inputs = tokenizer.encode(prompt, return_tensors="pt").to('cuda')
         lp = LogitsProcessorForMultiQuote(original_text, tokenizer, prompt_length=inputs.shape[-1])
         response = generate(inputs, logits_processor=LogitsProcessorList([lp]))
-        result = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
+        result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
 
-        try:    # just to make sure
-            json.loads(result)
-        except json.JSONDecodeError as e:
-            logging.error(f'Response {n} is not valid JSON: {result} ({e})')
+        result_list = json.loads(result_str)
+        result_with_spans = find_spans_for_quote(original_text, result_list, must_exist=True, must_unique=False)
 
-        print(result)
+        print(json.dumps(result_with_spans))
 
-        # TODO: Maybe now retrieve the span start:end of the exact quotation parts?
-        # try:
-        #     result = retry_until_parse(pipe, chat_start, parser=parser, n_retries=args.retries, retry_hotter=args.retry_hotter)
-        # except ValueError as e:
-        #     logging.warning(f'Failed parsing response for input {n}; {e}')
-        #     print()
-        #     continue
-        #
-        # if args.json:
-        #     print(json.dumps(result))
-        # else:
-        #     for res in result:
-        #         print(res)
-        # print()
+    if not args.noshortcut:
+        logging.info(f'Shortcut used: {n_shortcuts_used}/{n}')
 
 
 def create_prompt_template(prompt_info: dict = None) -> str:
