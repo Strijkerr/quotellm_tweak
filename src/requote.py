@@ -76,8 +76,8 @@ def main():
 
     for n, (original_text, rephrased) in enumerate(csv.reader(args.file)):
 
-        logging.debug(f'Original:  {original_text}')
-        logging.debug(f'Rephrased: {rephrased}')
+        logging.info(f'Original:  {original_text}')
+        logging.info(f'Rephrased: {rephrased}')
 
         if not args.noshortcut:
             try:
