@@ -1,7 +1,7 @@
 import argparse
 import sys
 from transformers import LogitsProcessorList, AutoModelForCausalLM, AutoTokenizer
-from quote_utils import LogitsProcessorForMultiQuote, find_spans_for_quote
+from quote_utils import LogitsProcessorForMultiQuote, find_spans_for_multiquote
 import csv
 import logging
 import functools
@@ -102,7 +102,7 @@ def main():
 
         if not args.noshortcut:
             try:
-                result_with_spans = find_spans_for_quote(original_text.lower(), [rephrased.lower()], must_exist=True, must_unique=False)
+                result_with_spans = find_spans_for_multiquote(original_text.lower(), [rephrased.lower()], must_exist=True, must_unique=False)
             except ValueError:
                 pass
             else:
@@ -120,7 +120,7 @@ def main():
         result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
 
         result_list = json.loads(result_str)
-        result_with_spans = find_spans_for_quote(original_text, result_list, must_exist=True, must_unique=False)
+        result_with_spans = find_spans_for_multiquote(original_text, result_list, must_exist=True, must_unique=False)
 
         print(json.dumps(result_with_spans))
 

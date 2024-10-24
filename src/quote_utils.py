@@ -181,23 +181,23 @@ def merge_tries(*tries) -> dict:
     return new_trie
 
 
-def find_spans_for_quote(original: str, multiquote: list[str], must_exist=True, must_unique=False) -> list[dict]:
+def find_spans_for_multiquote(original: str, multiquote: list[str], must_exist=True, must_unique=False) -> list[dict]:
     """
-    >>> find_spans_for_quote("the quick brown fox jumped over the quick brown dog onto another fox", ["the quick", "fox"])
+    >>> find_spans_for_multiquote("the quick brown fox jumped over the quick brown dog onto another fox", ["the quick", "fox"])
     [{'start': 0, 'end': 9, 'text': 'the quick'}, {'start': 16, 'end': 19, 'text': 'fox'}]
-    >>> find_spans_for_quote("the quick brown fox jumped over the quick brown dog onto another fox", ["the quick brown", "fox"])
+    >>> find_spans_for_multiquote("the quick brown fox jumped over the quick brown dog onto another fox", ["the quick brown", "fox"])
     [{'start': 32, 'end': 47, 'text': 'the quick brown'}, {'start': 65, 'end': 68, 'text': 'fox'}]
-    >>> find_spans_for_quote("the quick brown fox jumped over the quick brown dog onto another fox", ["the quick brown fox"])
+    >>> find_spans_for_multiquote("the quick brown fox jumped over the quick brown dog onto another fox", ["the quick brown fox"])
     [{'start': 0, 'end': 19, 'text': 'the quick brown fox'}]
-    >>> find_spans_for_quote("the quick brown fox jumped over the quick brown dog onto another fox", ["the quick", "fox"], must_unique=True)
+    >>> find_spans_for_multiquote("the quick brown fox jumped over the quick brown dog onto another fox", ["the quick", "fox"], must_unique=True)
     Traceback (most recent call last):
     ...
     ValueError: No unique quote found.
-    >>> find_spans_for_quote("the quick brown fox jumped over the quick brown dog onto another fox", ["the hairy duck"])
+    >>> find_spans_for_multiquote("the quick brown fox jumped over the quick brown dog onto another fox", ["the hairy duck"])
     Traceback (most recent call last):
     ...
     ValueError: No quote found.
-    >>> find_spans_for_quote("the quick brown fox jumped over the quick brown dog onto another fox", ["the hairy duck"], must_exist=False)
+    >>> find_spans_for_multiquote("the quick brown fox jumped over the quick brown dog onto another fox", ["the hairy duck"], must_exist=False)
     [{'start': None, 'end': None, 'text': 'the hairy duck'}]
     """
     matches = (re.finditer(re.escape(quote), original) for quote in multiquote)
