@@ -11,70 +11,119 @@ import regex
 import itertools
 
 
-class ExtractiveGeneration(LogitsProcessor):
+class LogitsProcessorForMultiQuote(LogitsProcessor):
 
     """
-    This class and associated functions from https://yonigottesman.github.io/2023/08/10/extractive-generative.html
+    This class and associated functions based on https://yonigottesman.github.io/2023/08/10/extractive-generative.html
+    A list of LogitsProcessor instances can be passed into the transformers model.generate function, to filter/modify
+    the logits prior to sampling for generation.
     """
 
-    def __init__(self, original, tokenizer, prompt_length: int, allow_empty: bool = False, discontinuous_token_id: int = None) -> None:
-        """
-        For llama3, discontinuous_token_id // is 443
-        """
-        self.tokenizer = tokenizer
+    def __init__(self, original, tokenizer, prompt_length: int, allow_empty: bool = False) -> None:
+        self.prompt_length = prompt_length
+        self.allow_empty = allow_empty
+        if self.allow_empty:
+            logging.warning('Allowing empty JSON list responses is not yet implemented.')
         self.original = original
+
+        self.tokenizer = tokenizer
+        self.eos_token_id = tokenizer.eos_token_id if isinstance(tokenizer.eos_token_id, list) else [tokenizer.eos_token_id]
+        self.json_parts = self.get_json_part_ids()
         self.original_token_ids = tokenizer(original)["input_ids"]
         self.trie = create_trie(self.original_token_ids)
         self.map_to_unspaced_tokens = {id: tokenizer.encode(tokenizer.decode(id).lstrip())[1:] for id in self.original_token_ids}
-        self.prompt_length = prompt_length
-        self.eos_token_id = tokenizer.eos_token_id
-        self.allow_empty = allow_empty
-        self.discontinuous_token_id = discontinuous_token_id
-        self.json_parts = get_json_part_ids(tokenizer)
-        if not isinstance(self.eos_token_id, list):
-            self.eos_token_id = [self.eos_token_id]
 
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        """
+        Takes input_ids and logit scores, returns modified/filtered logit scores based on options for next token.
+        """
         beam_prefixes = input_ids[:, self.prompt_length:]
         for i, prefix in enumerate(beam_prefixes):
-            prefix_list = prefix.tolist()
-            if not prefix_list:
-                options = [self.json_parts['start']]
-            elif prefix_list[-1] == self.json_parts['end']:
-                options = self.eos_token_id
-            elif prefix_list[-1] == self.json_parts['comma']:
-                options = [self.json_parts['next']]
-            else:
-                options = valid_next_tokens(self.trie, prefix_list, discontinuous_token_id=self.discontinuous_token_id, nospace_mapping=self.map_to_unspaced_tokens, json_parts=self.json_parts)
-                if prefix_list[-1] not in [self.json_parts['start'], self.json_parts['next']]:
-                    options.append(self.json_parts['end'])
-                    options_post_comma = valid_next_tokens(self.trie, prefix_list + [self.json_parts['comma']], discontinuous_token_id=self.discontinuous_token_id, nospace_mapping=self.map_to_unspaced_tokens, json_parts=self.json_parts)
-                    if options_post_comma:
-                        options.append(self.json_parts['comma'])
-            # if self.discontinuous_token_id and not (prefix_list and prefix_list[-1] == self.discontinuous_token_id):
-            #     options.append(self.discontinuous_token_id)
-            # if self.allow_empty or prefix_list:
-            #     options.extend(self.eos_token_id)
+            options = self.get_options_for_next_token(prefix.tolist())
             if not options:
-                logging.debug(f'No options for next word! This can happen with beam search, not sure how to fix. {prefix}')
-            options = torch.tensor(options, dtype=torch.int, device=input_ids.device)
-            mask = torch.isin(torch.arange(scores[i].numel(), device=input_ids.device), options)
+                logging.warning(f'No options for next word! This can happen with beam search, but shouldn\'t happen otherwise; not sure how to fix. {prefix}')
+
+            options_tensor = torch.tensor(options, dtype=torch.int, device=input_ids.device)
+            mask = torch.isin(torch.arange(scores[i].numel(), device=input_ids.device), options_tensor)
             scores[i][~mask] = float("-inf")
         return scores
 
 
-def create_trie(token_ids: list[int]) -> dict[int, dict]:
+    def get_options_for_next_token(self, prefix: list[int]) -> list[int]:
+        """
+        Given a prefix of already generated token ids, it accesses self.trie to compute the possible next tokens.
+        These can come simply from the trie, or be various types of JSON-delimiters.
+        """
+        remaining_trie = self.trie
+
+        if not prefix:
+            return [self.json_parts['start']]
+        elif prefix[-1] == self.json_parts['end']:
+            return self.eos_token_id  # is a list!
+        elif prefix[-1] == self.json_parts['comma']:
+            return [self.json_parts['next']]
+
+        for i in prefix:
+            if i not in self.json_parts.values():
+                remaining_trie = remaining_trie.get(i, {})
+                continue
+
+            if i == self.json_parts['comma']:
+                continue
+
+            if i == self.json_parts['next']:
+                remaining_trie = merge_tries(*iter_subtries_recursively(remaining_trie))
+
+            if i == self.json_parts['next'] or i == self.json_parts['start']:
+                remaining_trie = {key: val
+                                  for j, subtrie in remaining_trie.items()
+                                  for key, val in prepend_path_to_trie(self.map_to_unspaced_tokens[j], subtrie).items()}
+
+        options = list(remaining_trie.keys())
+
+        if prefix[-1] not in self.json_parts.values():  # add end and comma as options
+            options.append(self.json_parts['end'])
+            if self.get_options_for_next_token(prefix + [self.json_parts['comma']]):
+                options.append(self.json_parts['comma'])
+
+        return options
+
+
+    def get_json_part_ids(self):
+        """
+        Finds the token ids for a bunch of json delimiters, required for guaranteeing json output.
+
+        E.g., for Llama3:
+        start   '["'    # 1204
+        end     '"]'    # 1365
+        comma   '",'    # 498
+        next    ' "'    # 330
+        """
+        json_parts = {'start': '["', 'end': '"]', 'comma': '",', 'next': ' "'}
+        json_part_ids = {}
+        for key, json_part in json_parts.items():
+            json_part_encoded = self.tokenizer.encode(json_part)
+            if len(json_part_encoded) > 2:
+                raise ValueError(f'Json part {json_part} is not a single token in this LLM.')   # TODO support this
+            json_part_ids[key] = json_part_encoded[-1]
+        return json_part_ids
+
+
+## Here comes more abstract trie-related stuff
+
+def create_trie(sequence: list[int]) -> dict[int, dict]:
     """
-    >>> trie = create_trie([1, 4, 3, 1, 4, 6]); print(trie[1][4].keys()) # walk down the path 1->4 and print the next options
+    Computes a nested dict representing a trie storing all pathways through some sequence
+    (final nodes represented by {}).
+
+    >>> trie = create_trie([1, 4, 3, 1, 4, 6]); print(trie[1][4].keys())    # possible tokens after 1, 4
     dict_keys([3, 6])
     >>> create_trie([1, 4, 3, 1, 4, 6])
     {1: {4: {3: {1: {4: {6: {}}}}, 6: {}}}, 4: {3: {1: {4: {6: {}}}}, 6: {}}, 3: {1: {4: {6: {}}}}, 6: {}}
-    >>> create_trie('the quick brown fox jumped over the lazy dog'.split())
-    {'the': {'quick': {'brown': {'fox': {'jumped': {'over': {'the': {'lazy': {'dog': {}}}}}}}}, 'lazy': {'dog': {}}}, 'quick': {'brown': {'fox': {'jumped': {'over': {'the': {'lazy': {'dog': {}}}}}}}}, 'brown': {'fox': {'jumped': {'over': {'the': {'lazy': {'dog': {}}}}}}}, 'fox': {'jumped': {'over': {'the': {'lazy': {'dog': {}}}}}}, 'jumped': {'over': {'the': {'lazy': {'dog': {}}}}}, 'over': {'the': {'lazy': {'dog': {}}}}, 'lazy': {'dog': {}}, 'dog': {}}
     """
     trie = {}
-    for suffix in [token_ids[i:] for i in range(len(token_ids))]:
+    for suffix in [sequence[i:] for i in range(len(sequence))]:
         node = trie
         for token in suffix:
             if token not in node:
@@ -83,64 +132,22 @@ def create_trie(token_ids: list[int]) -> dict[int, dict]:
     return trie
 
 
-def valid_next_tokens(trie: dict[int, dict], prefix: list[int], discontinuous_token_id: int = None, nospace_mapping: dict = None, json_parts: dict = None) -> list[int]:
-    """
-    >>> trie = create_trie([1, 4, 3, 1, 4, 6]); print(valid_next_tokens(trie, [1, 4]))
-    [3, 6]
-    >>> trie = create_trie([1, 4, 3, 1, 4, 6]); set(valid_next_tokens(trie, [1, 99], discontinuous_token_id=99)) == {3, 1, 4, 6}
-    True
-    >>> trie = create_trie([1, 4, 3, 1, 4, 6]); set(valid_next_tokens(trie, [1, 4, 99], discontinuous_token_id=99)) == {1, 4, 6}
-    True
-    >>> trie = create_trie([1, 4, 3, 1, 4, 6]); set(valid_next_tokens(trie, [99], discontinuous_token_id=99)) == {4, 3, 1, 6}
-    True
-    >>> trie = create_trie([1, 4, 3, 1, 4, 6]); set(valid_next_tokens(trie, [1, 99, 6], discontinuous_token_id=99)) == set()
-    True
-    >>> trie = create_trie([1, 4, 3, 1, 4, 6, 7, 4]); set(valid_next_tokens(trie, [1, 99, 6, 99], discontinuous_token_id=99)) == {4}
-    True
-    >>> trie = create_trie('the quick brown fox jumped over the lazy dog'.split())
-    >>> set(valid_next_tokens(trie, 'the //'.split(), discontinuous_token_id='//')) == {'lazy', 'fox', 'brown', 'jumped', 'the', 'over', 'dog'}
-    True
-    >>> set(valid_next_tokens(trie, 'the // dog'.split(), discontinuous_token_id='//')) == set()
-    True
-    >>> trie = create_trie([9, 8, 5, 6, 8, 7, 5, 6, 9]); set(valid_next_tokens(trie, [1, 5, 6], json_parts={'start': 1, 'end': 2, 'comma': 3, 'next': 4})) == {8, 9}
-    True
-    """
-    remaining_trie = trie
-    for i in prefix:  # TODO: refactor
-        if discontinuous_token_id is not None and i == discontinuous_token_id:
-            remaining_trie = merge_tries(*iter_subtries_recursively(remaining_trie))
-        elif json_parts and i == json_parts['comma']:
-            continue
-        elif json_parts and nospace_mapping and i == json_parts['start']:
-            remaining_trie = {key: val
-                              for j, subtrie in remaining_trie.items()
-                              for key, val in prepend_path_to_trie(nospace_mapping[j], subtrie).items()}
-        elif json_parts and i == json_parts['next']:
-            remaining_trie = merge_tries(*iter_subtries_recursively(remaining_trie))
-            if nospace_mapping:
-                remaining_trie = {key: val
-                                  for j, subtrie in remaining_trie.items()
-                                  for key, val in prepend_path_to_trie(nospace_mapping[j], subtrie).items()}
-        else:
-            remaining_trie = remaining_trie.get(i, {})
-
-    result = list(remaining_trie.keys())
-    return result
-
-
 def prepend_path_to_trie(prefix: list[int], trie: dict[int, dict]) -> dict[int, dict]:
     """
-    >>> prepend_path_to_trie([1, 2, 3], {4: 5})
-    {1: {2: {3: {4: 5}}}}
+    Extends an existing trie by prepending a path (thus prepending it to all pathways it represents).
+
+    >>> prepend_path_to_trie([1, 2, 3], {4: {5: {}}})
+    {1: {2: {3: {4: {5: {}}}}}}
     """
     if not prefix:
         return trie
     return {prefix[0]: prepend_path_to_trie(prefix[1:], trie)}
 
 
-
-def iter_subtries_recursively(d: dict[int, dict]) -> typing.Generator[dict[int, dict], None, None]:
+def iter_subtries_recursively(trie: dict[int, dict]) -> typing.Generator[dict[int, dict], None, None]:
     """
+    Returns a generator yielding all sub-tries contained somewhere, recursively down, in the original trie.
+
     >>> list(iter_subtries_recursively({1: {2: {3: {}}}}))
     [{2: {3: {}}}, {3: {}}, {}]
     >>> list(iter_subtries_recursively({1: {2: {1: {}}}, 4: {2: {1: {}}, 7: {}}, 2: {}, 9: {4: {}, 12: {13: {}}}}))
@@ -148,13 +155,15 @@ def iter_subtries_recursively(d: dict[int, dict]) -> typing.Generator[dict[int, 
     >>> list(iter_subtries_recursively({4: {3: {1: {4: {6: {}}}}, 6: {}}}))
     [{3: {1: {4: {6: {}}}}, 6: {}}, {1: {4: {6: {}}}}, {4: {6: {}}}, {6: {}}, {}, {}]
     """
-    for k, v in d.items():
+    for k, v in trie.items():
         yield v
         yield from iter_subtries_recursively(v)
 
 
 def merge_tries(*tries) -> dict:
     """
+    Merge two or more tries to form a new trie, representing all pathways of the original ones.
+
     >>> merge_tries({1: {}}, {2: {}})
     {1: {}, 2: {}}
     >>> merge_tries({1: {}, 2: {3: {}}}, {2: {4: {}}})
@@ -172,28 +181,8 @@ def merge_tries(*tries) -> dict:
 
 
 
-def get_json_part_ids(tokenizer):
-    """
-    For Llama3:
-    start   '["'    # 1204
-    end     '"]'    # 1365
-    comma   '",'    # 498
-    next    ' "'    # 330
-    """
 
-    json_parts = {'start': '["', 'end': '"]', 'comma': '",', 'next': ' "'}
-    json_part_ids = {}
-    for key, json_part in json_parts.items():
-        json_part_encoded = tokenizer.encode(json_part)
-        if len(json_part_encoded) > 2:
-            raise ValueError(f'Json part {json_part} is not a single token in this LLM.')   # TODO support this
-        json_part_ids[key] = json_part_encoded[-1]
-    return json_part_ids
-
-
-
-
-######### Below is old stuff no longer used, but perhaps useful as fallback option? ########
+######### Below is old stuff no longer used, but perhaps useful as clumsy fallback option in the future... ########
 
 def retry_until_parse(pipe, chat_start, parser, n_retries, fail_ok=False, increase_temp=.1):
     n_try = 0
