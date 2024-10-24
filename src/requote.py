@@ -1,11 +1,49 @@
 import argparse
 import sys
 from transformers import LogitsProcessorList, AutoModelForCausalLM, AutoTokenizer
-from quote_utils import ExtractiveGeneration
+from quote_utils import LogitsProcessorForMultiQuote
 import csv
 import logging
 import functools
 import json
+
+
+"""
+
+CLI for matching paraphrases of components of a text, to literal quotes in that text.
+
+## Example:
+
+$ cat example.csv | python requote.py -v --prompt prompt.json 
+
+This could work for instance based on the following files:
+
+example.csv:
+
+```
+"Waarom en door wie zijn de horeca gesloten? Was u daarvan op de hoogte?","Waarom zijn de horeca gesloten?"
+"Waarom en door wie zijn de horeca gesloten? Was u daarvan op de hoogte?","Door wie zijn de horeca gesloten?"
+"Hoe komt het dat fotonen niets wegen en heel snel bewegen?","Hoe komt het dat fotonen niets wegen?"
+"Hoe komt het dat fotonen niets wegen en heel snel bewegen?","Hoe komt het dat fotonen heel snel bewegen?"
+"Waarom wandelen mensen in Japan graag, maar in Frankrijk niet?","Waarom wandelen mensen in Frankrijk niet graag?"
+"Waarom wandelen mensen in Japan graag, en fietsen mensen in Frankrijk liever?","Waarom fietsen mensen in Frankrijk liever?"
+"Bent u op de hoogte van het nieuwsbericht over hooligans? Zoja, wat is daarover uw mening?","Wat is uw mening daarover?"
+```
+
+prompt.json
+
+```
+{"system_prompt":  "We're going to find literal quotations that support a given paraphrase, for the Dutch language.",
+  "prompt_template":  "## Example {n}. \n> {original}\n\nThis text asks the question: \"{rephrased}\"\nThe question is conveyed exclusively by certain parts of the original text:\n{response}\n",
+  "examples": [
+    {"original": "Sinds wanneer geldt deze maatregel en wat was destijds de motivatie (is deze openbaar)?", "rephrased": "Wat was destijds de motivatie voor deze maatregel?", "response": ["wat was destijds de motivatie"]},
+    {"original": "Heeft u de brief van de Indonesische overheid gelezen, en zoja, wat is uw reactie?", "rephrased": "Wat is uw reactie op de brief van de Indonesische overheid?", "response": ["wat is uw reactie?"]},
+    {"original": "Bent u het met mij eens dat dierenrecht en milieubescherming een prominentere plek moeten innemen in de samenleving?", "rephrased": "Vindt u ook dat milieubescherming een prominentere plek in de samenleving moet innemen?", "response": ["Bent u het met mij eens dat", "milieubescherming een prominentere plek moeten innemen in de samenleving?"]},
+  ]
+}
+```
+
+"""
 
 
 default_system_prompt = "We're going to find literal quotations that support a given paraphrase."
@@ -60,7 +98,7 @@ def main():
         logging.debug(f'Rephrased: {rephrased}')
 
         inputs = tokenizer.encode(prompt, return_tensors="pt").to('cuda')
-        lp = ExtractiveGeneration(original_text, tokenizer, prompt_length=inputs.shape[-1])
+        lp = LogitsProcessorForMultiQuote(original_text, tokenizer, prompt_length=inputs.shape[-1])
         response = generate(inputs, logits_processor=LogitsProcessorList([lp]))
         result = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
 
