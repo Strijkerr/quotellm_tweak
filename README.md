@@ -1,4 +1,4 @@
-# QuoteLLM: forcing LLMs to answer your prompt only with literal quotes from some source text
+# QuoteLLM: Constrained generation allowing only literal quotes from some source text
 
 ## Install and basic use
 
@@ -20,7 +20,7 @@ Assuming a `.csv` file containing `original,rephrased` pairs, and a file `prompt
 $ requote example.csv --prompt prompt.json
 ```
 
-This will output, for each input line, a JSON list of extracted quotes. 
+This will output, for each input line, a JSON list of extracted quotes, each quote a dictionary with `start`, `end` and `text`. 
 
 The above example presupposes files like the following:
 
@@ -33,7 +33,7 @@ The above example presupposes files like the following:
 "Hoe komt het dat fotonen niets wegen en heel snel bewegen?","Hoe komt het dat fotonen heel snel bewegen?"
 "Waarom wandelen mensen in Japan graag, maar in Frankrijk niet?","Waarom wandelen mensen in Frankrijk niet graag?"
 "Waarom wandelen mensen in Japan graag, en fietsen mensen in Frankrijk liever?","Waarom fietsen mensen in Frankrijk liever?"
-"Bent u op de hoogte van het nieuwsbericht over hooligans? Zoja, wat is daarover uw mening?","Wat is uw mening daarover?"
+"Bent u op de hoogte van het nieuwsbericht over hooligans? Zoja, wat is daarover uw mening?","Wat is uw mening daarover?""
 ```
 
 ### `prompt.json`
