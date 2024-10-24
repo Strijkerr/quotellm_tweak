@@ -26,11 +26,10 @@ def main():
     argparser.add_argument('file', nargs='?', type=argparse.FileType('r'), default=sys.stdin, help='Input file with pairs original,rephrased per line (csv); when omitted read from stdin.')
     argparser.add_argument('--prompt', required=False, type=argparse.FileType('r'), default=None, help='.jsonl file with system prompt, prompt template, and examples (keys original, rephrased (list), response)')
     argparser.add_argument('--model', required=False, default="unsloth/llama-3-70b-bnb-4bit", type=str)
-    argparser.add_argument('--json', action='store_true', help='Whether to give json output; otherwise each question on a new line, with empty line per input.')
     argparser.add_argument('--temp', required=False, type=float, help='Temperature', default=None)
-    argparser.add_argument('--topp', required=False, type=float, help='Sample only from top probability', default=None)
-    argparser.add_argument('--topk', required=False, type=int, help='Top k top probability', default=None)
-    argparser.add_argument('--beams', required=False, type=int, help='num_beams to search', default=None)
+    argparser.add_argument('--topp', required=False, type=float, help='Sample only from top p portion of probability distribution', default=None)
+    argparser.add_argument('--topk', required=False, type=int, help='Sample only from top k tokens with max probability', default=None)
+    argparser.add_argument('--beams', required=False, type=int, help='number of beams to search (does not work well with constrained generation)', default=None)
     argparser.add_argument('-v', '--verbose', action='store_true', help='To show debug messages.')
     args = argparser.parse_args()
 
@@ -38,7 +37,7 @@ def main():
         logging.warning('Beams may not work very well with constrained generation.')
 
     if not args.prompt:
-        logging.warning('Are you sure you don\'t want to specify a custom --prompt, perhaps with few-shot examples?')
+        logging.warning('Are you sure you don\'t want to specify a custom prompt .json file (--prompt), perhaps containing few-shot examples?')
 
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)
@@ -57,7 +56,7 @@ def main():
         prompt = prompt_template.format(original=original_text, rephrased=rephrased)
         original_text = original_text.replace('"', '\"')  # to avoid JSON problems
 
-        logging.debug(f'Input: {original_text} | {rephrased}')
+        logging.debug(f'Original: {original_text}\nRephrased: {rephrased}')
 
         inputs = tokenizer.encode(prompt, return_tensors="pt").to('cuda')
         lp = ExtractiveGeneration(original_text, tokenizer, prompt_length=inputs.shape[-1])
