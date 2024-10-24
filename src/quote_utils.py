@@ -17,22 +17,26 @@ class ExtractiveGeneration(LogitsProcessor):
     This class and associated functions from https://yonigottesman.github.io/2023/08/10/extractive-generative.html
     """
 
-    def __init__(self, input_start_len: int, context_tokens: list[int], eos_token_id: int | list[int], nospace_mapping: dict = None, allow_empty=False, discontinuous_token_id: int = None, json_parts: dict = None) -> None:
+    def __init__(self, original, tokenizer, prompt_length: int, allow_empty: bool = False, discontinuous_token_id: int = None) -> None:
         """
         For llama3, discontinuous_token_id // is 443
         """
-        self.trie = create_trie(context_tokens)
-        self.input_start_len = input_start_len
-        self.nospace_mapping = nospace_mapping
-        self.eos_token_id = eos_token_id
+        self.tokenizer = tokenizer
+        self.original = original
+        self.original_token_ids = tokenizer(original)["input_ids"]
+        self.trie = create_trie(self.original_token_ids)
+        self.map_to_unspaced_tokens = {id: tokenizer.encode(tokenizer.decode(id).lstrip())[1:] for id in self.original_token_ids}
+        self.prompt_length = prompt_length
+        self.eos_token_id = tokenizer.eos_token_id
         self.allow_empty = allow_empty
         self.discontinuous_token_id = discontinuous_token_id
-        self.json_parts = json_parts
+        self.json_parts = get_json_part_ids(tokenizer)
         if not isinstance(self.eos_token_id, list):
             self.eos_token_id = [self.eos_token_id]
 
+
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
-        beam_prefixes = input_ids[:, self.input_start_len:]
+        beam_prefixes = input_ids[:, self.prompt_length:]
         for i, prefix in enumerate(beam_prefixes):
             prefix_list = prefix.tolist()
             if not prefix_list:
@@ -42,10 +46,10 @@ class ExtractiveGeneration(LogitsProcessor):
             elif prefix_list[-1] == self.json_parts['comma']:
                 options = [self.json_parts['next']]
             else:
-                options = valid_next_tokens(self.trie, prefix_list, discontinuous_token_id=self.discontinuous_token_id, nospace_mapping=self.nospace_mapping, json_parts=self.json_parts)
+                options = valid_next_tokens(self.trie, prefix_list, discontinuous_token_id=self.discontinuous_token_id, nospace_mapping=self.map_to_unspaced_tokens, json_parts=self.json_parts)
                 if prefix_list[-1] not in [self.json_parts['start'], self.json_parts['next']]:
                     options.append(self.json_parts['end'])
-                    options_post_comma = valid_next_tokens(self.trie, prefix_list + [self.json_parts['comma']], discontinuous_token_id=self.discontinuous_token_id, nospace_mapping=self.nospace_mapping, json_parts=self.json_parts)
+                    options_post_comma = valid_next_tokens(self.trie, prefix_list + [self.json_parts['comma']], discontinuous_token_id=self.discontinuous_token_id, nospace_mapping=self.map_to_unspaced_tokens, json_parts=self.json_parts)
                     if options_post_comma:
                         options.append(self.json_parts['comma'])
             # if self.discontinuous_token_id and not (prefix_list and prefix_list[-1] == self.discontinuous_token_id):
@@ -166,6 +170,25 @@ def merge_tries(*tries) -> dict:
         new_trie[key] = merge_tries(*subtries)
     return new_trie
 
+
+
+def get_json_part_ids(tokenizer):
+    """
+    For Llama3:
+    start   '["'    # 1204
+    end     '"]'    # 1365
+    comma   '",'    # 498
+    next    ' "'    # 330
+    """
+
+    json_parts = {'start': '["', 'end': '"]', 'comma': '",', 'next': ' "'}
+    json_part_ids = {}
+    for key, json_part in json_parts.items():
+        json_part_encoded = tokenizer.encode(json_part)
+        if len(json_part_encoded) > 2:
+            raise ValueError(f'Json part {json_part} is not a single token in this LLM.')   # TODO support this
+        json_part_ids[key] = json_part_encoded[-1]
+    return json_part_ids
 
 
 

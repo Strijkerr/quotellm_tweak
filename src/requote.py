@@ -14,7 +14,7 @@ default_prompt_template = """## Example {n}.
 > {original}
 
 Part of this text conveys the following: "{rephrased}"
-The meaning is conveyed exclusively by certain parts of the original text:
+This meaning is conveyed exclusively by certain parts of the original text:
 {response}
 
 """
@@ -37,49 +37,33 @@ def main():
     if args.beams:
         logging.warning('Beams may not work very well with constrained generation.')
 
+    if not args.prompt:
+        logging.warning('Are you sure you don\'t want to specify a custom --prompt, perhaps with few-shot examples?')
+
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)
 
-    if not args.prompt:
-        prompt_lines = [default_system_prompt,
-                        default_prompt_template.format(n='{n}', original='{original}', rephrased='{rephrased}', response='')]
-    else:
-        prompt_info = json.load(args.prompt)
-        prompt_lines = [prompt_info['system_prompt']]
-        for n_example, example in enumerate(prompt_info['examples'], start=1):
-            example_prompt = prompt_info['prompt_template'].format(n=n_example, original=example['original'], rephrased=example['rephrased'], response=json.dumps(example['response']))
-            prompt_lines.append(example_prompt)
-        prompt_lines.append(prompt_info['prompt_template'].format(n='{n}', original='{original}', rephrased='{rephrased}', response=''))
+    prompt_template = create_prompt_template(json.load(args.prompt) if args.prompt else None)
 
-    prompt_template = '\n'.join(prompt_lines)
-
-    logging.debug(f'Prompt template: {prompt_template}')
+    logging.info(f'Prompt template: {prompt_template}')
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    json_part_ids = get_json_part_ids(tokenizer)
-
     model = AutoModelForCausalLM.from_pretrained(args.model)
     generate = functools.partial(model.generate, max_new_tokens=200, do_sample=args.temp is not None,
                                  num_beams=args.beams, temperature=args.temp, top_k=args.topk, top_p=args.topp)
 
+    for n, (original_text, rephrased) in enumerate(csv.reader(args.file)):
 
-    for n, (original, rephrased) in enumerate(csv.reader(args.file)):
+        prompt = prompt_template.format(original=original_text, rephrased=rephrased)
+        original_text = original_text.replace('"', '\"')  # to avoid JSON problems
 
-        prompt = prompt_template.format(n=n_example + 1, original=original, rephrased=rephrased)
-
-        original = original.replace('"', '\"')  # to avoid JSON problems
-
-        logging.debug(f'Prompt: {original} | {rephrased}')
+        logging.debug(f'Input: {original_text} | {rephrased}')
 
         inputs = tokenizer.encode(prompt, return_tensors="pt").to('cuda')
-        original_ids = tokenizer(original)["input_ids"]
-        nospace_mapping = {id: tokenizer.encode(tokenizer.decode(id).lstrip())[1:] for id in original_ids}
-
-        lp = ExtractiveGeneration(inputs.shape[-1], original_ids, tokenizer.eos_token_id, nospace_mapping=nospace_mapping, json_parts=json_part_ids)
-
+        lp = ExtractiveGeneration(original_text, tokenizer, prompt_length=inputs.shape[-1])
         response = generate(inputs, logits_processor=LogitsProcessorList([lp]))
-
         result = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
+
         try:    # just to make sure
             json.loads(result)
         except json.JSONDecodeError as e:
@@ -103,23 +87,20 @@ def main():
         # print()
 
 
-def get_json_part_ids(tokenizer):
-    """
-    For Llama3:
-    start   '["'    # 1204
-    end     '"]'    # 1365
-    comma   '",'    # 498
-    next    ' "'    # 330
-    """
+def create_prompt_template(prompt_info: dict = None) -> str:
+    if not prompt_info:
+        prompt_lines = [default_system_prompt,
+                        default_prompt_template.format(n='1', original='{original}', rephrased='{rephrased}', response='')]
+    else:
+        prompt_lines = [prompt_info['system_prompt']]
+        n_example = 0
+        for n_example, example in enumerate(prompt_info['examples'], start=1):
+            example_prompt = prompt_info['prompt_template'].format(n=n_example, original=example['original'], rephrased=example['rephrased'], response=json.dumps(example['response']))
+            prompt_lines.append(example_prompt)
+        prompt_lines.append(prompt_info['prompt_template'].format(n=n_example+1, original='{original}', rephrased='{rephrased}', response=''))
 
-    json_parts = {'start': '["', 'end': '"]', 'comma': '",', 'next': ' "'}
-    json_part_ids = {}
-    for key, json_part in json_parts.items():
-        json_part_encoded = tokenizer.encode(json_part)
-        if len(json_part_encoded) > 2:
-            raise ValueError(f'Json part {json_part} is not a single token in this LLM.')   # TODO support this
-        json_part_ids[key] = json_part_encoded[-1]
-    return json_part_ids
+    prompt_template = '\n'.join(prompt_lines)
+    return prompt_template
 
 
 if __name__ == '__main__':
