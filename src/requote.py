@@ -10,13 +10,13 @@ import json
 
 """
 
-CLI for matching paraphrases of components of a text, to literal quotes in that text.
+CLI for matching paraphrases of parts of a text, to literal quotes in that text.
 
 ## Example:
 
 $ cat example.csv | python requote.py -v --prompt prompt.json 
 
-This could work for instance based on the following files:
+It will output a JSON list of strings per input line. This could work for instance based on the following files:
 
 example.csv:
 
