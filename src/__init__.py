@@ -1,1 +1,1 @@
-from .quote_utils import LogitsProcessorForMultiQuote
+from .quote_utils import LogitsProcessorForMultiQuote, find_spans_for_multiquote
