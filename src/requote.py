@@ -33,7 +33,7 @@ This meaning is conveyed exclusively by certain parts of the original text:
 {response}
 
 """,
-    'examples': [],
+    'examples': [], # TODO add default examples
 }
 
 
