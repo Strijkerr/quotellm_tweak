@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quotellm"
+version = "0.1"
+authors = [{name="Matthijs Westera", email="m.westera@hum.leidenuniv.nl"}]
+description = "Forcing LLMs to generate only literal quotes from some source text; a form of constrained generation."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["transformers", "torch", "accelerate", "optimum", "auto_gptq", "bitsandbytes"]
+
+
+[project.scripts]
+requote = "requote:main"
+
+[project.urls]
+"Homepage" = "https://github.com/mwestera/quotellm"
+"Bug Tracker" = "https://github.com/mwestera/quotellm/issues"
