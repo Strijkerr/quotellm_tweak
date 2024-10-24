@@ -12,42 +12,19 @@ import json
 
 CLI for matching paraphrases of parts of a text, to literal quotes in that text.
 
-## Example:
+Assuming a csv of original snippets + extracted, rephrased components, and a .json specifying a prompt template
+and few-shot examples, you can do:
 
-$ cat example.csv | python requote.py -v --prompt prompt.json 
+$ requote example.csv --prompt prompt.json 
 
 It will output a JSON list of strings per input line. This could work for instance based on the following files:
-
-example.csv:
-
-```
-"Waarom en door wie zijn de horeca gesloten? Was u daarvan op de hoogte?","Waarom zijn de horeca gesloten?"
-"Waarom en door wie zijn de horeca gesloten? Was u daarvan op de hoogte?","Door wie zijn de horeca gesloten?"
-"Hoe komt het dat fotonen niets wegen en heel snel bewegen?","Hoe komt het dat fotonen niets wegen?"
-"Hoe komt het dat fotonen niets wegen en heel snel bewegen?","Hoe komt het dat fotonen heel snel bewegen?"
-"Waarom wandelen mensen in Japan graag, maar in Frankrijk niet?","Waarom wandelen mensen in Frankrijk niet graag?"
-"Waarom wandelen mensen in Japan graag, en fietsen mensen in Frankrijk liever?","Waarom fietsen mensen in Frankrijk liever?"
-"Bent u op de hoogte van het nieuwsbericht over hooligans? Zoja, wat is daarover uw mening?","Wat is uw mening daarover?"
-```
-
-prompt.json
-
-```
-{"system_prompt":  "We're going to find literal quotations that support a given paraphrase, for the Dutch language.",
-  "prompt_template":  "## Example {n}. \n> {original}\n\nThis text asks the question: \"{rephrased}\"\nThe question is conveyed exclusively by certain parts of the original text:\n{response}\n",
-  "examples": [
-    {"original": "Sinds wanneer geldt deze maatregel en wat was destijds de motivatie (is deze openbaar)?", "rephrased": "Wat was destijds de motivatie voor deze maatregel?", "response": ["wat was destijds de motivatie"]},
-    {"original": "Heeft u de brief van de Indonesische overheid gelezen, en zoja, wat is uw reactie?", "rephrased": "Wat is uw reactie op de brief van de Indonesische overheid?", "response": ["wat is uw reactie?"]},
-    {"original": "Bent u het met mij eens dat dierenrecht en milieubescherming een prominentere plek moeten innemen in de samenleving?", "rephrased": "Vindt u ook dat milieubescherming een prominentere plek in de samenleving moet innemen?", "response": ["Bent u het met mij eens dat", "milieubescherming een prominentere plek moeten innemen in de samenleving?"]},
-  ]
-}
-```
 
 """
 
 
-default_system_prompt = "We're going to find literal quotations that support a given paraphrase."
-default_prompt_template = """## Example {n}. 
+DEFAULT_PROMPT_INFO = {
+    'system_prompt': "We're going to find literal quotations that support a given paraphrase.",
+    'prompt_template': """## Example {n}. 
 
 > {original}
 
@@ -55,7 +32,9 @@ Part of this text conveys the following: "{rephrased}"
 This meaning is conveyed exclusively by certain parts of the original text:
 {response}
 
-"""
+""",
+    'examples': [],
+}
 
 
 def main():
@@ -84,7 +63,7 @@ def main():
     if not args.prompt:
         logging.warning('Are you sure you don\'t want to specify a custom prompt .json file (--prompt), perhaps containing few-shot examples?')
 
-    prompt_template = create_prompt_template(json.load(args.prompt) if args.prompt else None)
+    prompt_template = create_prompt_template(**(json.load(args.prompt) if args.prompt else DEFAULT_PROMPT_INFO))
 
     logging.info(f'Prompt template: {prompt_template}')
 
@@ -128,20 +107,16 @@ def main():
         logging.info(f'Shortcut used: {n_shortcuts_used}/{n}')
 
 
-def create_prompt_template(prompt_info: dict = None) -> str:
-    if not prompt_info:
-        prompt_lines = [default_system_prompt,
-                        default_prompt_template.format(n='1', original='{original}', rephrased='{rephrased}', response='')]
-    else:
-        prompt_lines = [prompt_info['system_prompt']]
-        n_example = 0
-        for n_example, example in enumerate(prompt_info['examples'], start=1):
-            example_prompt = prompt_info['prompt_template'].format(n=n_example, original=example['original'], rephrased=example['rephrased'], response=json.dumps(example['response']))
-            prompt_lines.append(example_prompt)
-        prompt_lines.append(prompt_info['prompt_template'].format(n=n_example+1, original='{original}', rephrased='{rephrased}', response=''))
+def create_prompt_template(system_prompt: str, prompt_template: str, examples: list[dict]) -> str:
+    prompt_lines = [system_prompt]
+    n_example = 0
+    for n_example, example in enumerate(examples, start=1):
+        example_prompt = prompt_template.format(n=n_example, original=example['original'], rephrased=example['rephrased'], response=json.dumps(example['response']))
+        prompt_lines.append(example_prompt)
+    prompt_lines.append(prompt_template.format(n=n_example+1, original='{original}', rephrased='{rephrased}', response=''))
 
-    prompt_template = '\n'.join(prompt_lines)
-    return prompt_template
+    full_prompt_template = '\n'.join(prompt_lines)
+    return full_prompt_template
 
 
 if __name__ == '__main__':
