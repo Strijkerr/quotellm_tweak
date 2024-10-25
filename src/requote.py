@@ -111,7 +111,7 @@ def create_prompt_template(system_prompt: str, prompt_template: str, examples: l
     prompt_lines = [system_prompt]
     n_example = 0
     for n_example, example in enumerate(examples, start=1):
-        example_prompt = prompt_template.format(n=n_example, original=example['original'], rephrased=example['rephrased'], response=json.dumps(example['response']))
+        example_prompt = prompt_template.format(n=n_example, original=example['original'], rephrased=example['rephrased'], response=json.dumps(example['response']).replace('{', '{{').replace('}', '}}'))
         prompt_lines.append(example_prompt)
     prompt_lines.append(prompt_template.format(n=n_example+1, original='{original}', rephrased='{rephrased}', response=''))
 
