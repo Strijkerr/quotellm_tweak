@@ -67,7 +67,7 @@ def main():
 
     logging.info(f'Prompt template: {prompt_template}')
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, clean_up_tokenization_spaces=False)  # clean up changes e.g. " ." to "."
     model = AutoModelForCausalLM.from_pretrained(args.model)
     generate = functools.partial(model.generate, max_new_tokens=200, do_sample=args.temp is not None,
                                  num_beams=args.beams, temperature=args.temp, top_k=args.topk, top_p=args.topp)
@@ -97,6 +97,8 @@ def main():
         lp = LogitsProcessorForMultiQuote(original_text, tokenizer, prompt_length=inputs.shape[-1])
         response = generate(inputs, logits_processor=LogitsProcessorList([lp]))
         result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
+
+        logging.info(f'Response: {result_str}')
 
         result_list = json.loads(result_str)
         result_with_spans = find_spans_for_multiquote(original_text, result_list, must_exist=True, must_unique=False)
