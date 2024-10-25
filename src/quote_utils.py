@@ -214,16 +214,16 @@ def find_spans_for_multiquote(original: str, multiquote: list[str], must_exist=T
 
     if not candidate_multimatches:
         if must_exist:
-            raise ValueError('No quote found.')
+            raise ValueError(f'No quote found: {multiquote}.')
         else:
-            logging.warning('No quote found, returning dict with start/end None.')
+            logging.warning(f'No quote found, returning dict with start/end None: {multiquote}')
             return [{'start': None, 'end': None, 'text': text} for text in multiquote]
 
     if len(candidate_multimatches) > 1:
         if must_unique:
-            raise ValueError('No unique quote found.')
+            raise ValueError(f'No unique quote found: {multiquote}')
         else:
-            logging.warning('No unique quote found, going with the first, shortest distance one.')
+            logging.warning(f'No unique quote found, going with the first, shortest distance one: {multiquote}')
 
     closest_multimatch = min(candidate_multimatches, key=lambda multimatch: max(m.span()[1] for m in multimatch) - min(m.span()[0] for m in multimatch))
     return [{'start': m.span()[0], 'end': m.span()[1], 'text': m.group()} for m in closest_multimatch]
