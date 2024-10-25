@@ -234,6 +234,7 @@ def find_spans_for_multiquote(original: str, multiquote: list[str], must_exist=T
 
 ######### Below is old stuff no longer used, but perhaps useful as clumsy fallback option in the future... ########
 
+
 def retry_until_parse(pipe, chat_start, parser, n_retries, fail_ok=False, increase_temp=.1):
     n_try = 0
     result = None
@@ -333,3 +334,56 @@ def dotted_quote_to_regex(quote: str, fuzzy: float, fuzzy_min_e: int = 2, fuzzy_
     return regex.compile(the_regex_str, flags=regex.IGNORECASE + regex.BESTMATCH)
 
 
+##### Below is some old stuff from another attempt, to simply enumerate all possible quotes for use with the outlines library
+
+
+
+# def PydanticClassFactory(original):
+#
+#     # TODO: Or use enum?
+#     class Component(BaseModel):
+#         subquestion: str
+#         # spans: typing.Literal[*make_possible_quotes(original)]
+#         spans: typing.Union[*[tuple[*[typing.Literal[word] for word in quote]] for quote in make_possible_quotes(original)]]
+#
+#         # # Yields an error, but does not actually restrict the logits during generation.
+#         # @model_validator(mode='after')
+#         # def check_quote(self):
+#         #     if not self.spans.split(' / '):   # TODO not finished
+#         #         raise ValueError('quote is not a substring')
+#         #     return self
+#
+#     class Components(BaseModel):
+#         components: list[Component]
+#
+#     return Components
+
+
+def all_sublists(s):
+    return sorted(
+        (s[start:end]
+        for start in range(0, len(s))
+        for end in range(start+1, len(s)+1)),
+        key=len
+    )
+
+
+def add_discontinuous_sublists(lists):
+    for l in lists:
+        yield [l]
+        for start in range(1, len(l)-1):
+            for end in range(start+1, len(l)):
+                yield [l[:start], l[end:]]
+
+
+def make_possible_quotes(original):
+    """
+    >>> make_possible_quotes('test an original string')
+    ['test', 'an', 'original', 'string', 'test an', 'an original', 'original string', 'test an original', 'test / original', 'an original string', 'an / string', 'test an original string', 'test / original string', 'test / string', 'test an / string']
+    """
+    # TODO: cubic explosion; also "Waarom wandelen mensen in Japan graag, maar in China niet?" is wel opgesplitst, maar niet de juiste spans... Probleem met komma?
+    logging.info('Computing possible quotes...')
+    multispans = add_discontinuous_sublists(all_sublists(original.split()))
+    as_strings = [' / '.join(' '.join(n) for n in m) for m in multispans]
+    logging.info(f'Done! {len(as_strings)}')
+    return as_strings
