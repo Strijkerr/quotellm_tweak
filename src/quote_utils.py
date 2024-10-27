@@ -32,7 +32,12 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         self.json_parts = self.get_json_part_ids()
         self.original_token_ids = tokenizer(original)["input_ids"]
         self.trie = create_trie(self.original_token_ids)
-        self.map_to_unspaced_tokens = {id: tokenizer.encode(tokenizer.decode(id).lstrip())[1:] for id in self.original_token_ids}
+        self.map_to_unspaced_tokens = {}
+        for id in self.original_token_ids:
+            token = tokenizer.decode(id)
+            token_stripped = token.lstrip()
+            if token != token_stripped or id == self.original_token_ids[1]: # also for first token, even if it isn't spaced
+                self.map_to_unspaced_tokens[id] = tokenizer.encode(token_stripped)[1:]  # remove special start token; can be multiple token ids
 
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
@@ -43,7 +48,7 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         for i, prefix in enumerate(beam_prefixes):
             options = self.get_options_for_next_token(prefix.tolist())
             if not options:
-                logging.warning(f'No options for next word! This can happen with beam search, but shouldn\'t happen otherwise; not sure how to fix. {prefix}')
+                logging.warning(f'No options for next word! This can happen with beam search, but shouldn\'t happen otherwise; not sure how to fix. {self.tokenizer.decode(prefix)}')
 
             options_tensor = torch.tensor(options, dtype=torch.int, device=input_ids.device)
             mask = torch.isin(torch.arange(scores[i].numel(), device=input_ids.device), options_tensor)
@@ -78,15 +83,18 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
 
             if i == self.json_parts['next'] or i == self.json_parts['start']:
                 remaining_trie = {key: val
-                                  for j, subtrie in remaining_trie.items()
-                                  for key, val in prepend_path_to_trie(self.map_to_unspaced_tokens[j], subtrie).items()}
+                                  for j, subtrie in remaining_trie.items() if (j_unspaced := self.map_to_unspaced_tokens.get(j, []))
+                                  for key, val in prepend_path_to_trie(j_unspaced, subtrie).items()}
 
         options = list(remaining_trie.keys())
 
         if prefix[-1] not in self.json_parts.values():  # add end and comma as options
-            options.append(self.json_parts['end'])
-            if self.get_options_for_next_token(prefix + [self.json_parts['comma']]):
-                options.append(self.json_parts['comma'])
+            if any(option in self.map_to_unspaced_tokens for option in options):    # only at word-end, i.e., if next option starts with a space
+                options.append(self.json_parts['end'])
+                if self.get_options_for_next_token(prefix + [self.json_parts['comma'], self.json_parts['next']]):
+                    options.append(self.json_parts['comma'])
+            elif not options:
+                options.append(self.json_parts['end'])
 
         return options
 
@@ -139,6 +147,8 @@ def prepend_path_to_trie(prefix: list[int], trie: dict[int, dict]) -> dict[int, 
 
     >>> prepend_path_to_trie([1, 2, 3], {4: {5: {}}})
     {1: {2: {3: {4: {5: {}}}}}}
+    >>> prepend_path_to_trie([], {4: {5: {}}})
+    {4: {5: {}}}
     """
     if not prefix:
         return trie
