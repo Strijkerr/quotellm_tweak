@@ -36,8 +36,8 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         for id in self.original_token_ids:
             token = tokenizer.decode(id)
             token_stripped = token.lstrip()
-            if token != token_stripped or id == self.original_token_ids[1]: # also for first token, even if it isn't spaced
-                self.map_to_unspaced_tokens[id] = tokenizer.encode(token_stripped)[1:]  # remove special start token; can be multiple token ids
+            if token != token_stripped or id == self.original_token_ids[1]:  # also for first token, even if it isn't spaced
+                self.map_to_unspaced_tokens[id] = tokenizer.encode(token_stripped, add_special_tokens=False)
 
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
@@ -112,8 +112,8 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         json_parts = {'start': '["', 'end': '"]', 'comma': '",', 'next': ' "'}
         json_part_ids = {}
         for key, json_part in json_parts.items():
-            json_part_encoded = self.tokenizer.encode(json_part)
-            if len(json_part_encoded) > 2:
+            json_part_encoded = self.tokenizer.encode(json_part, add_special_tokens=False)
+            if len(json_part_encoded) != 1:
                 raise ValueError(f'Json part {json_part} is not a single token in this LLM.')   # TODO support this
             json_part_ids[key] = json_part_encoded[-1]
         return json_part_ids
