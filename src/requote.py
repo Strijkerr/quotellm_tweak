@@ -48,6 +48,7 @@ def main():
     argparser.add_argument('--topp', required=False, type=float, help='Sample only from top p portion of probability distribution', default=None)
     argparser.add_argument('--topk', required=False, type=int, help='Sample only from top k tokens with max probability', default=None)
     argparser.add_argument('--beams', required=False, type=int, help='number of beams to search (does not work well with constrained generation)', default=1)
+    argparser.add_argument('--quote_verbosity', required=False, type=float, help='Only used if --beams > 1. Positive to favor longer quotes, negative to favor shorter ones.', default=0.0)
     argparser.add_argument('-v', '--verbose', action='store_true', help='To show debug messages.')
     args = argparser.parse_args()
 
@@ -70,7 +71,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model, clean_up_tokenization_spaces=False)  # clean up changes e.g. " ." to "."
     model = AutoModelForCausalLM.from_pretrained(args.model)
     generate = functools.partial(model.generate, max_new_tokens=200, do_sample=args.temp is not None,
-                                 num_beams=args.beams, temperature=args.temp, top_k=args.topk, top_p=args.topp)
+                                 num_beams=args.beams, temperature=args.temp, top_k=args.topk, top_p=args.topp, length_penalty=args.quote_verbosity)
 
     n_shortcuts_used = 0
 
