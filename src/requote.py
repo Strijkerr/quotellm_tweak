@@ -6,6 +6,8 @@ import csv
 import logging
 import functools
 import json
+import itertools
+import numpy
 
 
 """
@@ -73,7 +75,7 @@ def main():
     generate = functools.partial(model.generate, max_new_tokens=200, do_sample=args.temp is not None,
                                  num_beams=args.beams, temperature=args.temp, top_k=args.topk, top_p=args.topp, length_penalty=args.quote_verbosity)
 
-    n_shortcuts_used = 0
+    stats_keeper = []
 
     for n, (original_text, rephrased) in enumerate(csv.reader(args.file)):
 
@@ -86,7 +88,7 @@ def main():
             except ValueError:
                 pass
             else:
-                n_shortcuts_used += 1
+                stats_keeper.append(stats_to_record(original_text, rephrased, result_with_spans, shortcut_used=True))
                 logging.info(f'Shortcut used!')
                 print(json.dumps(result_with_spans))
                 continue
@@ -104,10 +106,11 @@ def main():
         result_list = json.loads(result_str)
         result_with_spans = find_spans_for_multiquote(original_text, result_list, must_exist=True, must_unique=False)
 
+        stats_keeper.append(stats_to_record(original_text, rephrased, result_with_spans))
+
         print(json.dumps(result_with_spans))
 
-    if not args.noshortcut:
-        logging.info(f'Shortcut used: {n_shortcuts_used}/{n}')
+    log_stats_summary(stats_keeper)
 
 
 def create_prompt_template(system_prompt: str, prompt_template: str, examples: list[dict]) -> str:
@@ -120,6 +123,25 @@ def create_prompt_template(system_prompt: str, prompt_template: str, examples: l
 
     full_prompt_template = '\n'.join(prompt_lines)
     return full_prompt_template
+
+
+def stats_to_record(original_text, rephrased, spans, shortcut_used=False):
+    span_length = len(' '.join(span['text'] for span in spans))
+    return {
+        'n_spans': len(spans),
+        'span_length_abs': span_length,
+        'span_length_rel': span_length / len(original_text),
+        'span_length_rel_rephrased': span_length / len(rephrased),
+        'shortcut': shortcut_used,
+    }
+
+
+def log_stats_summary(stats_keeper: list[dict]) -> None:
+    stats_lists: dict[str, list] = {k: [dic[k] for dic in stats_keeper] for k in stats_keeper[0]}
+    stats_lists_noshortcut: dict[str, list] = {k: [dic[k] for dic in stats_keeper if not dic['shortcut']] for k in stats_keeper[0]}
+    for key, stats in stats_lists.items():
+        stats_noshortcut = stats_lists_noshortcut[key]
+        logging.info(f'{key}: {numpy.mean(stats_noshortcut)} (std: {numpy.std(stats_noshortcut)}) [with shortcuts: {numpy.mean(stats)} (std: {numpy.std(stats)})]')
 
 
 if __name__ == '__main__':
