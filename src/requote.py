@@ -50,7 +50,7 @@ def main():
     argparser.add_argument('--topp', required=False, type=float, help='Sample only from top p portion of probability distribution', default=None)
     argparser.add_argument('--topk', required=False, type=int, help='Sample only from top k tokens with max probability', default=None)
     argparser.add_argument('--beams', required=False, type=int, help='number of beams to search (does not work well with constrained generation)', default=1)
-    argparser.add_argument('--quote_verbosity', required=False, type=float, help='Only used if --beams > 1. Positive to favor longer quotes, negative to favor shorter ones.', default=0.0)
+    argparser.add_argument('--quote-verbosity', required=False, type=float, help='Only used if --beams > 1. Positive to favor longer quotes, negative to favor shorter ones.', default=0.0)
     argparser.add_argument('-v', '--verbose', action='store_true', help='To show debug messages.')
     args = argparser.parse_args()
 
