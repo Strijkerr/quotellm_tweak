@@ -57,7 +57,7 @@ def main():
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG, format='ReQuote %(levelname)s: %(message)s')
 
-    logging.info(json.dumps(args.__dict__, indent='  '))
+    logging.info(json.dumps({k: v for k, v in args.__dict__.items() if k not in ['file', 'prompt']}, indent='  '))
 
     if args.model != 'unsloth/llama-3-70b-bnb-4bit':
         logging.warning('Not sure if it works with this model, but let\'s try! If it has a similar vocabulary, and big enough context window, it should be fine...')
