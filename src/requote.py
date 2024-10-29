@@ -55,7 +55,9 @@ def main():
     args = argparser.parse_args()
 
     if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
+        logging.basicConfig(level=logging.DEBUG, format='ReQuote %(levelname)s: %(message)s')
+
+    logging.info(json.dumps(args.__dict__, indent='  '))
 
     if args.model != 'unsloth/llama-3-70b-bnb-4bit':
         logging.warning('Not sure if it works with this model, but let\'s try! If it has a similar vocabulary, and big enough context window, it should be fine...')
@@ -101,9 +103,16 @@ def main():
         response = generate(inputs, logits_processor=LogitsProcessorList([lp]))
         result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
 
+        if not result_str.endswith('"]'):
+            logging.warning('Truncated response string; appending "], but the response is probably bad.') # TODO: This should only ever happen if exceeding the token limit.
+            if not result_str.endswith('"'):
+                result_str += '"'
+            result_str += ']'
+
         logging.info(f'Response: {result_str}')
 
         result_list = json.loads(result_str)
+
         result_with_spans = find_spans_for_multiquote(original_text, result_list, must_exist=True, must_unique=False)
 
         stats_keeper.append(stats_to_record(original_text, rephrased, result_with_spans))
