@@ -45,7 +45,7 @@ def main():
     argparser.add_argument('file', nargs='?', type=argparse.FileType('r'), default=sys.stdin, help='Input file with pairs original,rephrased per line (csv); when omitted read from stdin.')
     argparser.add_argument('--prompt', required=False, type=argparse.FileType('r'), default=None, help='.jsonl file with system prompt, prompt template, and examples (keys original, rephrased (list), response)')
     argparser.add_argument('--noshortcut', action='store_true', help='To *not* bypass the LLM, even if the rephrase is already a literal quote.')
-    argparser.add_argument('--model', required=False, default="unsloth/llama-3-70b-bnb-4bit", type=str)
+    argparser.add_argument('--model', required=False, default="unsloth/llama-3-70b-bnb-4bit", type=str)  # test: xiaodongguaAIGC/llama-3-debug
     argparser.add_argument('--temp', required=False, type=float, help='Temperature', default=None)
     argparser.add_argument('--topp', required=False, type=float, help='Sample only from top p portion of probability distribution', default=None)
     argparser.add_argument('--topk', required=False, type=int, help='Sample only from top k tokens with max probability', default=None)
