@@ -11,22 +11,18 @@ import numpy
 
 
 DEFAULT_PROMPT_INFO = {
-    'system_prompt': "We're going to find literal quotations that support a given paraphrase.",
-    'prompt_template': """## Example {n}. 
-
-> {original}
-
-Part of this text conveys the following: "{rephrased}"
-This meaning is conveyed exclusively by certain parts of the original text:
-{response}
-
-""",
+    'system_prompt': "We're going to find literal quotations that support a specific, extracted meaning component.",
+    'prompt_template': """## Example {n}.
+Original text: "{original}"
+Extracted meaning component, rephrased: "{rephrased}"
+The meaning component is conveyed by (literal quoted spans): {response}""",
     'examples': [], # TODO add default examples
 }
 
 
 def main():
 
+    # TODO: Also allow unconstrained generation, to compare?
     argparser = argparse.ArgumentParser(description='CLI for matching paraphrases of components of a text, to literal quotes in that text.')
     argparser.add_argument('file', nargs='?', type=argparse.FileType('r'), default=sys.stdin, help='Input file with pairs original,rephrased per line (csv); when omitted read from stdin.')
     argparser.add_argument('--prompt', required=False, type=argparse.FileType('r'), default=None, help='.jsonl file with system prompt, prompt template, and examples (keys original, rephrased (list), response)')
@@ -116,7 +112,7 @@ def create_prompt_template(system_prompt: str, prompt_template: str, examples: l
         prompt_lines.append(example_prompt)
     prompt_lines.append(prompt_template.format(n=n_example+1, original='{original}', rephrased='{rephrased}', response=''))
 
-    full_prompt_template = '\n'.join(prompt_lines)
+    full_prompt_template = '\n\n'.join(prompt_lines)
     return full_prompt_template
 
 
