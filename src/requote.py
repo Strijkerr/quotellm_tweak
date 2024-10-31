@@ -10,20 +10,6 @@ import itertools
 import numpy
 
 
-"""
-
-CLI for matching paraphrases of parts of a text, to literal quotes in that text.
-
-Assuming a csv of original snippets + extracted, rephrased components, and a .json specifying a prompt template
-and few-shot examples, you can do:
-
-$ requote example.csv --prompt prompt.json 
-
-It will output a JSON list of strings per input line. This could work for instance based on the following files:
-
-"""
-
-
 DEFAULT_PROMPT_INFO = {
     'system_prompt': "We're going to find literal quotations that support a given paraphrase.",
     'prompt_template': """## Example {n}. 
