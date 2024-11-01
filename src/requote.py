@@ -128,11 +128,16 @@ def stats_to_record(original_text, rephrased, spans, shortcut_used=False):
 
 
 def log_stats_summary(stats_keeper: list[dict]) -> None:
-    stats_lists: dict[str, list] = {k: [dic[k] for dic in stats_keeper] for k in stats_keeper[0]}
-    stats_lists_noshortcut: dict[str, list] = {k: [dic[k] for dic in stats_keeper if not dic['shortcut']] for k in stats_keeper[0]}
-    for key, stats in stats_lists.items():
-        stats_noshortcut = stats_lists_noshortcut[key]
-        logging.info(f'{key}: {numpy.mean(stats_noshortcut)} (std: {numpy.std(stats_noshortcut)}) [with shortcuts: {numpy.mean(stats)} (std: {numpy.std(stats)})]')
+    stats_keeper_noshortcut = [s for s in stats_keeper if not s['shortcut']]
+    logging.info('========================')
+    logging.info('subset,stat,mean,std')
+
+    for stats_keeper, label in [(stats_keeper, 'all'), (stats_keeper_noshortcut, 'llm')]:
+        stats_lists: dict[str, list] = {k: [dic[k] for dic in stats_keeper] for k in stats_keeper[0]}
+
+        for key, stats_list in stats_lists.items():
+            logging.info(f'{label},{key},{numpy.mean(stats_list)},{numpy.std(stats_list)}')
+    logging.info('========================')
 
 
 if __name__ == '__main__':
