@@ -9,7 +9,7 @@ import json
 import itertools
 import numpy
 
-
+MAX_TOKENS = 500
 DEFAULT_PROMPT_INFO = {
     'system_prompt': "We're going to find literal quotations that support a specific, extracted meaning component.",
     'prompt_template': """## Example {n}.
@@ -22,16 +22,20 @@ The meaning component is conveyed by (literal quoted spans): {response}""",
 
 def main():
 
-    # TODO: Also allow unconstrained generation, to compare?
     argparser = argparse.ArgumentParser(description='CLI for matching paraphrases of components of a text, to literal quotes in that text.')
     argparser.add_argument('file', nargs='?', type=argparse.FileType('r'), default=sys.stdin, help='Input file with pairs original,rephrased per line (csv); when omitted read from stdin.')
     argparser.add_argument('--prompt', required=False, type=argparse.FileType('r'), default=None, help='.jsonl file with system prompt, prompt template, and examples (keys original, rephrased (list), response)')
+
     argparser.add_argument('--noshortcut', action='store_true', help='To *not* bypass the LLM, even if the rephrase is already a literal quote.')
+    argparser.add_argument('--json', action='store_true', help='To force model to output json list of strings; otherwise strings separated by --sep')
+    argparser.add_argument('--sep', required=False, type=str, defaul='...', help='If not --json, this is the separator string to be used.')
+
     argparser.add_argument('--model', required=False, default="unsloth/llama-3-70b-bnb-4bit", type=str)  # test: xiaodongguaAIGC/llama-3-debug
     argparser.add_argument('--temp', required=False, type=float, help='Temperature', default=None)
     argparser.add_argument('--topp', required=False, type=float, help='Sample only from top p portion of probability distribution', default=None)
     argparser.add_argument('--topk', required=False, type=int, help='Sample only from top k tokens with max probability', default=None)
     argparser.add_argument('--beams', required=False, type=int, help='number of beams to search (does not work well with constrained generation)', default=1)
+
     argparser.add_argument('--quote-verbosity', required=False, type=float, help='Only used if --beams > 1. Positive to favor longer quotes, negative to favor shorter ones.', default=0.0)
     argparser.add_argument('-v', '--verbose', action='store_true', help='To show debug messages.')
     args = argparser.parse_args()
@@ -44,9 +48,6 @@ def main():
     if args.model != 'unsloth/llama-3-70b-bnb-4bit':
         logging.warning('Not sure if it works with this model, but let\'s try! If it has a similar vocabulary, and big enough context window, it should be fine...')
 
-    if args.beams > 1:
-        logging.warning('Beams may not work very well with constrained generation.')
-
     if not args.prompt:
         logging.warning('Are you sure you don\'t want to specify a custom prompt .json file (--prompt), perhaps containing few-shot examples?')
 
@@ -56,7 +57,7 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, clean_up_tokenization_spaces=False)  # clean up changes e.g. " ." to "."
     model = AutoModelForCausalLM.from_pretrained(args.model)
-    generate = functools.partial(model.generate, max_new_tokens=200, do_sample=args.temp is not None,
+    generate = functools.partial(model.generate, max_new_tokens=MAX_TOKENS, do_sample=args.temp is not None,
                                  num_beams=args.beams, temperature=args.temp, top_k=args.topk, top_p=args.topp, length_penalty=args.quote_verbosity)
 
     stats_keeper = []
@@ -81,19 +82,24 @@ def main():
         original_text = original_text.replace('"', '\"')  # to avoid JSON problems
 
         inputs = tokenizer.encode(prompt, return_tensors="pt").to('cuda')
-        lp = LogitsProcessorForMultiQuote(original_text, tokenizer, prompt_length=inputs.shape[-1])
+        lp = LogitsProcessorForMultiQuote(original_text, tokenizer, prompt_length=inputs.shape[-1], json=args.json, sep=args.sep)
         response = generate(inputs, logits_processor=LogitsProcessorList([lp]))
         result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
 
-        if not result_str.endswith('"]'):
-            logging.warning('Truncated response string; appending "], but the response is probably bad.') # TODO: This should only ever happen if exceeding the token limit.
+        if len(response) >= MAX_TOKENS:
+            logging.warning('Response at MAX_TOKENS, a currently hard-coded limit (but feel free to edit the source); this should not really happen and means the response is probably truncated/bad.')
+        if args.json and not result_str.endswith('"]'):
+            logging.warning('Truncated JSON response string; appending "], but the response is probably bad.')
             if not result_str.endswith('"'):
                 result_str += '"'
             result_str += ']'
 
         logging.info(f'Response: {result_str}')
 
-        result_list = json.loads(result_str)
+        if args.json:
+            result_list = json.loads(result_str)
+        else:
+            result_list = [s.strip() for s in result_str.split(args.sep)]
 
         result_with_spans = find_spans_for_multiquote(original_text, result_list, must_exist=True, must_unique=False)
 
