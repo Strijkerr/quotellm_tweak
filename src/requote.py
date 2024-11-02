@@ -28,7 +28,7 @@ def main():
 
     argparser.add_argument('--noshortcut', action='store_true', help='To *not* bypass the LLM, even if the rephrase is already a literal quote.')
     argparser.add_argument('--json', action='store_true', help='To force model to output json list of strings; otherwise strings separated by --sep')
-    argparser.add_argument('--sep', required=False, type=str, defaul='...', help='If not --json, this is the separator string to be used.')
+    argparser.add_argument('--sep', required=False, type=str, default='...', help='If not --json, this is the separator string to be used.')
 
     argparser.add_argument('--model', required=False, default="unsloth/llama-3-70b-bnb-4bit", type=str)  # test: xiaodongguaAIGC/llama-3-debug
     argparser.add_argument('--temp', required=False, type=float, help='Temperature', default=None)
