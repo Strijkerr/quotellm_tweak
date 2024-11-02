@@ -20,16 +20,23 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
     the logits prior to sampling for generation.
     """
 
-    def __init__(self, original, tokenizer, prompt_length: int, allow_empty: bool = False) -> None:
+    def __init__(self, original, tokenizer, prompt_length: int, allow_empty: bool = False, json=False, sep='...') -> None:
         self.prompt_length = prompt_length
         self.allow_empty = allow_empty
-        if self.allow_empty:
-            logging.warning('Allowing empty JSON list responses is not yet implemented.')
         self.original = original
 
         self.tokenizer = tokenizer
         self.eos_token_id = tokenizer.eos_token_id if isinstance(tokenizer.eos_token_id, list) else [tokenizer.eos_token_id]
+
+        self.sep = self.tokenizer.encode(sep, add_special_tokens=False)
+        self.json = json
         self.json_parts = self.get_json_part_ids()
+
+        self.sep_tokens = [self.json_parts['comma'], self.json_parts['next']] if json else self.sep
+        self.special_tokens = self.json_parts.values() if json else self.sep
+        self.new_quote_tokens = [self.json_parts['next'], self.json_parts['start']] if json else self.sep
+        self.end_tokens = [self.json_parts['end']] if json else self.eos_token_id   # is a list!
+
         self.original_token_ids = tokenizer(original)["input_ids"]
         self.trie = create_trie(self.original_token_ids)
         self.map_to_unspaced_tokens = {}
@@ -48,7 +55,7 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         for i, prefix in enumerate(beam_prefixes):
             options = self.get_options_for_next_token(prefix.tolist())
             if not options:
-                logging.warning(f'No options for next word! This can happen with beam search, but shouldn\'t happen otherwise; not sure how to fix. {self.tokenizer.decode(prefix)}')
+                logging.warning(f'No options for next word! This shouldn\'t really happen... {self.tokenizer.decode(prefix)}')
 
             options_tensor = torch.tensor(options, dtype=torch.int, device=input_ids.device)
             mask = torch.isin(torch.arange(scores[i].numel(), device=input_ids.device), options_tensor)
@@ -63,38 +70,58 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         """
         remaining_trie = self.trie
 
-        if not prefix:
-            return [self.json_parts['start']]
-        elif prefix[-1] == self.json_parts['end']:
-            return self.eos_token_id  # is a list!
-        elif prefix[-1] == self.json_parts['comma']:
-            return [self.json_parts['next']]
+        if self.json:
+            if not prefix:
+                start_options = [self.json_parts['start']]
+                if self.allow_empty:
+                    start_options.append(self.json_parts['start_empty'])
+                return start_options
+            elif prefix[-1] == self.json_parts['end']:
+                return self.eos_token_id  # is a list!
+            elif prefix[-1] == self.json_parts['comma']:
+                return [self.json_parts['next']]
+            elif self.allow_empty and prefix[-1] == self.json_parts['start_empty']:
+                return [self.json_parts['end_empty']]
 
-        for i in prefix:
-            if i not in self.json_parts.values():
+        else:
+            if not prefix:  # start of quote is always unspaced tokens
+                remaining_trie = {
+                    key: val for j, subtrie in remaining_trie.items() if
+                    (j_unspaced := self.map_to_unspaced_tokens.get(j, []))
+                    for key, val in prepend_path_to_trie(j_unspaced, subtrie).items()
+                }
+
+        for i in prefix:    # Done again and again as prefix grows... caching might break if beams?
+            if i not in self.special_tokens:
                 remaining_trie = remaining_trie.get(i, {})
                 continue
 
-            if i == self.json_parts['comma']:
+            if i in self.sep_tokens[:-1]:
                 continue
 
-            if i == self.json_parts['next']:
+            if i == self.sep_tokens[-1]:
                 remaining_trie = merge_tries(*iter_subtries_recursively(remaining_trie))
 
-            if i == self.json_parts['next'] or i == self.json_parts['start']:
+            if i in self.special_tokens:
                 remaining_trie = {key: val
                                   for j, subtrie in remaining_trie.items() if (j_unspaced := self.map_to_unspaced_tokens.get(j, []))
-                                  for key, val in prepend_path_to_trie(j_unspaced, subtrie).items()}
+                                  for key, val in prepend_path_to_trie(j_unspaced if self.json else [j], subtrie).items()}    # unspaced start after sep is only needed for json mode
 
         options = list(remaining_trie.keys())
 
-        if prefix[-1] not in self.json_parts.values():  # add end and comma as options
-            if any(option in self.map_to_unspaced_tokens for option in options):    # only at word-end, i.e., if next option starts with a space
-                options.append(self.json_parts['end'])
-                if self.get_options_for_next_token(prefix + [self.json_parts['comma'], self.json_parts['next']]):
-                    options.append(self.json_parts['comma'])
-            elif not options:
-                options.append(self.json_parts['end'])
+        if not self.json and self.allow_empty:
+            options.append(self.end_tokens)
+
+        # To allow discontinuous quotes:
+        if prefix:
+            is_at_word_end = any(option in self.map_to_unspaced_tokens for option in options)
+            if prefix[-1] not in self.special_tokens:
+                if is_at_word_end:    # only at word-end, i.e., if next option starts with a space
+                    options.append(self.end_tokens[0])
+                    if self.get_options_for_next_token(prefix + self.sep_tokens):
+                        options.append(self.sep_tokens[0])
+                elif not options:
+                    options.extend(self.end_tokens)
 
         return options
 
@@ -108,8 +135,10 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         end     '"]'    # 1365
         comma   '",'    # 498
         next    ' "'    # 330
+        start_empty  '['
+        end_empty   ']'
         """
-        json_parts = {'start': '["', 'end': '"]', 'comma': '",', 'next': ' "'}
+        json_parts = {'start': '["', 'end': '"]', 'comma': '",', 'next': ' "', 'start_empty': '[', 'end_empty': ']'}
         json_part_ids = {}
         for key, json_part in json_parts.items():
             json_part_encoded = self.tokenizer.encode(json_part, add_special_tokens=False)
