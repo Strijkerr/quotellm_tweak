@@ -23,7 +23,7 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
     def __init__(self, original, tokenizer, prompt_length: int, allow_empty: bool = False, json=False, sep='...') -> None:
         self.prompt_length = prompt_length
         self.allow_empty = allow_empty
-        self.original = original
+        self.original = ' ' + original  # To make sure all words, including the first, are preceded by a space.
 
         self.tokenizer = tokenizer
         self.eos_token_id = tokenizer.eos_token_id if isinstance(tokenizer.eos_token_id, list) else [tokenizer.eos_token_id]
@@ -37,9 +37,12 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         self.new_quote_tokens = [self.json_parts['next'], self.json_parts['start']] if json else self.sep
         self.end_tokens = [self.json_parts['end']] if json else self.eos_token_id   # is a list!
 
-        self.original_token_ids = tokenizer(original)["input_ids"]
+        self.punctuation = self.get_punctuation_ids()
+
+        self.original_token_ids = tokenizer(self.original)["input_ids"]
         self.trie = create_trie(self.original_token_ids)
         self.map_to_unspaced_tokens = {}
+        self.map_to_spaced_tokens = {}
         for id in self.original_token_ids:
             token = tokenizer.decode(id)
             token_stripped = token.lstrip()
@@ -68,7 +71,6 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         Given a prefix of already generated token ids, it accesses self.trie to compute the possible next tokens.
         These can come simply from the trie, or be various types of JSON-delimiters.
         """
-        remaining_trie = self.trie
 
         if self.json:
             if not prefix:
@@ -83,47 +85,58 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
             elif self.allow_empty and prefix[-1] == self.json_parts['start_empty']:
                 return [self.json_parts['end_empty']]
 
-        else:
-            if not prefix:  # start of quote is always unspaced tokens
-                remaining_trie = {
-                    key: val for j, subtrie in remaining_trie.items() if
-                    (j_unspaced := self.map_to_unspaced_tokens.get(j, []))
-                    for key, val in prepend_path_to_trie(j_unspaced, subtrie).items()
-                }
-
-        for i in prefix:    # Done again and again as prefix grows... caching might break if beams?
-            if i not in self.special_tokens:
-                remaining_trie = remaining_trie.get(i, {})
-                continue
-
-            if i in self.sep_tokens[:-1]:
-                continue
-
-            if i == self.sep_tokens[-1]:
-                remaining_trie = merge_tries(*iter_subtries_recursively(remaining_trie))
-
-            if i in self.special_tokens:
-                remaining_trie = {key: val
-                                  for j, subtrie in remaining_trie.items() if (j_unspaced := self.map_to_unspaced_tokens.get(j, []))
-                                  for key, val in prepend_path_to_trie(j_unspaced if self.json else [j], subtrie).items()}    # unspaced start after sep is only needed for json mode
+        remaining_trie = self.compute_remaining_trie(tuple(prefix))
 
         options = list(remaining_trie.keys())
 
-        if not self.json and self.allow_empty:
+        if not prefix and not self.json and self.allow_empty:
             options.append(self.end_tokens)
+
+        # if not prefix or self.json and prefix[-1] == self.json_parts['next']:
+        #     options = [self.map_to_unspaced_tokens[o] for o in options]
 
         # To allow discontinuous quotes:
         if prefix:
-            is_at_word_end = any(option in self.map_to_unspaced_tokens for option in options)
+            is_at_word_end = any(option in self.map_to_unspaced_tokens or option in self.punctuation for option in options)
             if prefix[-1] not in self.special_tokens:
-                if is_at_word_end:    # only at word-end, i.e., if next option starts with a space
+                if is_at_word_end:    # only at word-end, i.e., if next option starts with a space or is punct
                     options.append(self.end_tokens[0])
-                    if self.get_options_for_next_token(prefix + self.sep_tokens):
+                    if any(any(subsubtrie for subsubtrie in subtrie) for subtrie in remaining_trie.values()):   # if we can skip a token without running out
                         options.append(self.sep_tokens[0])
                 elif not options:
                     options.extend(self.end_tokens)
 
         return options
+
+
+    @functools.cache
+    def compute_remaining_trie(self, prefix):
+
+        if not prefix:
+            return self.only_start_of_words(self.trie)
+
+        remaining_trie = self.compute_remaining_trie(prefix[:-1])
+        i = prefix[-1]
+
+        if i not in self.special_tokens:
+            return remaining_trie.get(i, {})
+
+        if i in self.sep_tokens[:-1]:
+            return remaining_trie
+
+        if i == self.sep_tokens[-1]:
+            remaining_trie = merge_tries(*[self.only_start_of_words(subtrie) for subtrie in iter_subtries_recursively(remaining_trie)])
+
+        return remaining_trie
+
+
+    def only_start_of_words(self, trie, make_unspaced=False):
+        new_trie = {}
+        for j, subtrie in trie.items():
+            if (j_unspaced := self.map_to_unspaced_tokens.get(j, [])):
+                for key, val in prepend_path_to_trie(j_unspaced if make_unspaced else [j], subtrie).items():
+                    new_trie[key] = merge_tries(new_trie.get(key, {}), val)
+        return new_trie
 
 
     def get_json_part_ids(self):
@@ -146,6 +159,12 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
                 raise ValueError(f'Json part {json_part} is not a single token in this LLM.')   # TODO support this
             json_part_ids[key] = json_part_encoded[-1]
         return json_part_ids
+
+
+    def get_punctuation_ids(self):
+        punct = '.!?,:;'
+        return [self.tokenizer.encode(p, add_special_tokens=False)[0] for p in punct]
+
 
 
 ## Here comes more abstract trie-related stuff
