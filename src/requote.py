@@ -51,7 +51,7 @@ def main():
     if not args.prompt:
         logging.warning('Are you sure you don\'t want to specify a custom prompt .json file (--prompt), perhaps containing few-shot examples?')
 
-    prompt_template = create_prompt_template(**(json.load(args.prompt) if args.prompt else DEFAULT_PROMPT_INFO))
+    prompt_template = create_prompt_template(**(json.load(args.prompt) if args.prompt else DEFAULT_PROMPT_INFO), json_format=args.json, sep=args.sep)
 
     logging.info(f'Prompt template: {prompt_template}')
 
@@ -110,11 +110,12 @@ def main():
     log_stats_summary(stats_keeper)
 
 
-def create_prompt_template(system_prompt: str, prompt_template: str, examples: list[dict]) -> str:
+def create_prompt_template(system_prompt: str, prompt_template: str, examples: list[dict], json_format=False, sep='...') -> str:
     prompt_lines = [system_prompt]
     n_example = 0
     for n_example, example in enumerate(examples, start=1):
-        example_prompt = prompt_template.format(n=n_example, original=example['original'], rephrased=example['rephrased'], response=json.dumps(example['response'])).replace('{', '{{').replace('}', '}}')
+        response_str = json.dumps(example['response']) if json_format else f'{sep} '.join(example['response'])
+        example_prompt = prompt_template.format(n=n_example, original=example['original'], rephrased=example['rephrased'], response=response_str).replace('{', '{{').replace('}', '}}')
         prompt_lines.append(example_prompt)
     prompt_lines.append(prompt_template.format(n=n_example+1, original='{original}', rephrased='{rephrased}', response=''))
 
