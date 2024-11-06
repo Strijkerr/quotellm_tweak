@@ -30,14 +30,14 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
 
         self.sep = self.tokenizer.encode(sep, add_special_tokens=False)
         self.json = json
-        self.json_parts = self.get_json_part_ids()
+
+        self.json_parts = get_json_part_ids(self.tokenizer)
+        self.punctuation = get_punctuation_ids(self.tokenizer)
 
         self.sep_tokens = [self.json_parts['comma'], self.json_parts['next']] if json else self.sep
         self.special_tokens = self.json_parts.values() if json else self.sep
         self.new_quote_tokens = [self.json_parts['next'], self.json_parts['start']] if json else self.sep
         self.end_tokens = [self.json_parts['end']] if json else self.eos_token_id   # is a list!
-
-        self.punctuation = self.get_punctuation_ids()
 
         self.original_token_ids = tokenizer(self.original)["input_ids"]
         self.trie = create_trie(self.original_token_ids)
@@ -139,31 +139,31 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         return new_trie
 
 
-    def get_json_part_ids(self):
-        """
-        Finds the token ids for a bunch of json delimiters, required for guaranteeing json output.
+def get_json_part_ids(tokenizer):
+    """
+    Finds the token ids for a bunch of json delimiters, required for guaranteeing json output.
 
-        E.g., for Llama3:
-        start   '["'    # 1204
-        end     '"]'    # 1365
-        comma   '",'    # 498
-        next    ' "'    # 330
-        start_empty  '['
-        end_empty   ']'
-        """
-        json_parts = {'start': '["', 'end': '"]', 'comma': '",', 'next': ' "', 'start_empty': '[', 'end_empty': ']'}
-        json_part_ids = {}
-        for key, json_part in json_parts.items():
-            json_part_encoded = self.tokenizer.encode(json_part, add_special_tokens=False)
-            if len(json_part_encoded) != 1:
-                raise ValueError(f'Json part {json_part} is not a single token in this LLM.')   # TODO support this
-            json_part_ids[key] = json_part_encoded[-1]
-        return json_part_ids
+    E.g., for Llama3:
+    start   '["'    # 1204
+    end     '"]'    # 1365
+    comma   '",'    # 498
+    next    ' "'    # 330
+    start_empty  '['
+    end_empty   ']'
+    """
+    json_parts = {'start': '["', 'end': '"]', 'comma': '",', 'next': ' "', 'start_empty': '[', 'end_empty': ']'}
+    json_part_ids = {}
+    for key, json_part in json_parts.items():
+        json_part_encoded = tokenizer.encode(json_part, add_special_tokens=False)
+        if len(json_part_encoded) != 1:
+            raise ValueError(f'Json part {json_part} is not a single token in this LLM.')   # TODO support this
+        json_part_ids[key] = json_part_encoded[-1]
+    return json_part_ids
 
 
-    def get_punctuation_ids(self):
-        punct = '.!?,:;'
-        return [self.tokenizer.encode(p, add_special_tokens=False)[0] for p in punct]
+def get_punctuation_ids(tokenizer):
+    punct = '.!?,:;'
+    return [tokenizer.encode(p, add_special_tokens=False)[0] for p in punct]
 
 
 
