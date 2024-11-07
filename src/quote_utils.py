@@ -15,7 +15,7 @@ import itertools
 
 class QuoteParser:
 
-    def __init__(self, original_ids, map_to_unspaced, sep_ids, start_ids, end_ids, punctuation, json_mode):
+    def __init__(self, original_ids, map_to_unspaced, sep_ids, start_ids, end_ids, empty_ids, punctuation, start_quote_nospace):
 
         # TODO: use punctuation too
 
@@ -23,7 +23,9 @@ class QuoteParser:
         self.sep_ids = sep_ids[::-1]        # as stacks, to pop from the end
         self.start_ids = start_ids[::-1]
         self.end_ids = end_ids[::-1]
-        self.json = json_mode
+        self.start_quote_nospace = start_quote_nospace
+        self.empty_ids = empty_ids
+        self.allow_empty = bool(self.empty_ids)
 
         self.map_to_unspaced = map_to_unspaced
 
@@ -46,9 +48,11 @@ class QuoteParser:
         # now we process the token id i:
         if i is None:   # first function call, start of list
             # Only start from whole words
-            self.current_pos = [p for p in self.word_start_pos]
+            self.current_pos = []
             # ensure spaceless start, for both json and non-json mode:
-            self.stack = [(self.map_to_unspaced.get(self.original[p], [self.original[p]])[::-1] + self.start_ids, p + 1) for p in self.current_pos if p + 1 < len(self.original)]
+            self.stack = [(self.map_to_unspaced.get(self.original[p], [self.original[p]])[::-1] + self.start_ids, p + 1) for p in self.word_start_pos if p + 1 < len(self.original)]
+            if self.allow_empty:
+                self.stack.append((self.empty_ids[::-1], 0))
             self.current_pos = []
             # TODO: This presupposes substitution can be done per-subtoken... Revise this later.
 
@@ -75,8 +79,9 @@ class QuoteParser:
             self.current_pos.extend([p for s, p in self.stack if s == [] and p is not None])
             self.stack = [(s, p) for s, p in self.stack if s]
 
-        logging.debug(f'Parsed: {i}\n  stack: {self.stack}\n  pos: {self.current_pos} \n     ({len(self.stack), len(self.current_pos)}')
+        logging.debug(f'Parsed: {i}\n  stack: {self.stack}\n  pos: {self.current_pos}')
 
+        # Now to list the options and some special symbols:
         options = [s[-1] for s, p in self.stack if s] + [self.original[p]
                                                          for p in self.current_pos if p is not None]
 
@@ -89,7 +94,7 @@ class QuoteParser:
         if at_end_of_word and some_later_words_left:
             options += [self.sep_ids[-1]]
 
-        return set(options)
+        return options
 
 
 class LogitsProcessorForMultiQuote(LogitsProcessor):
@@ -137,7 +142,8 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         beam_prefixes = input_ids[:, self.prompt_length:]
         for beam_n, prefix in enumerate(beam_prefixes):
 
-            parser = QuoteParser(self.original_token_ids, self.map_to_unspaced_tokens, self.sep_tokens, self.json_parts['start'], self.json_parts['end'] + [self.eos_token_id[0]], self.punctuation)
+            # TODO Caching
+            parser = QuoteParser(self.original_token_ids, self.map_to_unspaced_tokens, self.sep_tokens, self.json_parts['start'], self.json_parts['end'] + [self.eos_token_id[0]], empty_ids=self.json_parts['start_empty'] + self.json_parts['end_empty'], punctuation=self.punctuation, start_quote_nospace=self.json)
             options = parser.next(None)
             for i in prefix:
                 options = parser.next(i)
