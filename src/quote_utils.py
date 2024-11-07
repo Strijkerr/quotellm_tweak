@@ -12,6 +12,77 @@ import regex
 import itertools
 
 
+
+class QuoteParser:
+
+    def __init__(self, original_ids, map_to_unspaced, sep_ids, start_ids, end_ids, punctuation, json_mode):
+
+        # TODO: use punctuation too
+
+        self.original = original_ids
+        self.sep_ids = sep_ids[::-1]        # as stacks, to pop from the end
+        self.start_ids = start_ids[::-1]
+        self.end_ids = end_ids[::-1]
+        self.json = json_mode
+
+        self.map_to_unspaced = map_to_unspaced
+
+        self.id_to_pos = {pos: id for pos, id in enumerate(self.original)}
+        self.word_start_pos = set(pos for pos, id in enumerate(self.original) if pos == 0 or id in self.map_to_unspaced)
+
+        self.current_pos = None
+        self.stack = None
+
+
+    def next_iter(self, prefix):
+        options = self.next(None)
+        for i in prefix:
+            options = self.next(i)
+        return options
+
+
+    def next(self, i=None):
+
+        # now we process the token id i:
+        if i is None:   # first function call, start of list
+            # Only start from whole words
+            self.current_pos = [p for p in self.word_start_pos]
+            # ensure spaceless start, for both json and non-json mode:
+            self.stack = [(self.map_to_unspaced.get(self.original[p], [self.original[p]])[::-1] + self.start_ids, p + 1) for p in self.current_pos if p + 1 < len(self.original)]
+            self.current_pos = []
+            # TODO: This presupposes substitution can be done per-subtoken... Revise this later.
+
+        elif i == self.sep_ids[-1]:    # end of quote
+            # Only continue from whole words, starting two tokens to the right
+            min_pos = min(self.current_pos) + 2
+            self.current_pos = []
+            if self.json:   # ensure spaceless start, only for json mode
+                self.stack = [(self.map_to_unspaced.get(self.original[p], [self.original[p]])[::-1] + self.sep_ids[:-1], p + 1) for p in self.word_start_pos if p > min_pos]  # expect spaceless subtokens instead
+                # TODO: See previous.
+            else:
+                self.stack = [(self.sep_ids[:-1], p) for p in self.word_start_pos if p > min_pos]
+
+        elif i == self.end_ids[-1]:  # end of list
+            self.current_pos = []
+            self.stack = [(self.end_ids[:-1], None)]
+
+        else:  # consume stacked or original token
+            self.current_pos = [p + 1 for p in self.current_pos if p + 1 < len(self.original) and self.original[p] == i]
+            self.stack = [(s, p) for s, p in self.stack if s.pop() == i]
+
+        # clean up empty stacks, adding their resultant positions to current_pos:
+        if self.stack:
+            self.current_pos.extend([p for s, p in self.stack if s == []])
+            self.stack = [(s, p) for s, p in self.stack if s]
+
+        logging.debug(f'Parsed: {i}\n  stack: {self.stack}\n  pos: {self.current_pos} \n     ({len(self.stack), len(self.current_pos)}')
+
+        options = [s[-1] for s, p in self.stack if s] + [self.original[p] for p in self.current_pos]
+        options += [self.sep_ids[-1], self.end_ids[-1]]  # TODO: sep only if pre-final;   TODO maybe end only if unique-determining quote?
+
+        return options
+
+
 class LogitsProcessorForMultiQuote(LogitsProcessor):
 
     """
@@ -37,10 +108,10 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         self.sep_tokens = [self.json_parts['comma'], self.json_parts['next']] if json else self.sep
         self.special_tokens = self.json_parts.values() if json else self.sep
         self.new_quote_tokens = [self.json_parts['next'], self.json_parts['start']] if json else self.sep
-        self.end_tokens = [self.json_parts['end']] if json else self.eos_token_id   # is a list!
+        self.end_tokens = [self.json_parts['end']] if json else [self.eos_token_id[0]]
 
         self.original_token_ids = tokenizer(self.original)["input_ids"]
-        self.trie = create_trie(self.original_token_ids)
+        # self.trie = create_trie(self.original_token_ids)
         self.map_to_unspaced_tokens = {}
         self.map_to_spaced_tokens = {}
         for id in self.original_token_ids:
@@ -55,88 +126,20 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         Takes input_ids and logit scores, returns modified/filtered logit scores based on options for next token.
         """
         beam_prefixes = input_ids[:, self.prompt_length:]
-        for i, prefix in enumerate(beam_prefixes):
-            options = self.get_options_for_next_token(prefix.tolist())
+        for beam_n, prefix in enumerate(beam_prefixes):
+
+            parser = QuoteParser(self.original_token_ids, self.map_to_unspaced_tokens, self.sep_tokens, self.json_parts['start'], self.json_parts['end'] + [self.eos_token_id[0]], self.punctuation)
+            options = parser.next(None)
+            for i in prefix:
+                options = parser.next(i)
+
             if not options:
                 logging.warning(f'No options for next word! This shouldn\'t really happen... {self.tokenizer.decode(prefix)}')
 
             options_tensor = torch.tensor(options, dtype=torch.int, device=input_ids.device)
-            mask = torch.isin(torch.arange(scores[i].numel(), device=input_ids.device), options_tensor)
-            scores[i][~mask] = float("-inf")
+            mask = torch.isin(torch.arange(scores[beam_n].numel(), device=input_ids.device), options_tensor)
+            scores[beam_n][~mask] = float("-inf")
         return scores
-
-
-    def get_options_for_next_token(self, prefix: list[int]) -> list[int]:
-        """
-        Given a prefix of already generated token ids, it accesses self.trie to compute the possible next tokens.
-        These can come simply from the trie, or be various types of JSON-delimiters.
-        """
-
-        if self.json:
-            if not prefix:
-                start_options = [self.json_parts['start']]
-                if self.allow_empty:
-                    start_options.append(self.json_parts['start_empty'])
-                return start_options
-            elif prefix[-1] == self.json_parts['end']:
-                return self.eos_token_id  # is a list!
-            elif prefix[-1] == self.json_parts['comma']:
-                return [self.json_parts['next']]
-            elif self.allow_empty and prefix[-1] == self.json_parts['start_empty']:
-                return [self.json_parts['end_empty']]
-
-        remaining_trie = self.compute_remaining_trie(tuple(prefix))
-
-        options = list(remaining_trie.keys())
-
-        if not prefix and not self.json and self.allow_empty:
-            options.append(self.end_tokens)
-
-        # if not prefix or self.json and prefix[-1] == self.json_parts['next']:
-        #     options = [self.map_to_unspaced_tokens[o] for o in options]
-
-        # To allow discontinuous quotes:
-        if prefix:
-            is_at_word_end = any(option in self.map_to_unspaced_tokens or option in self.punctuation for option in options)
-            if prefix[-1] not in self.special_tokens:
-                if is_at_word_end:    # only at word-end, i.e., if next option starts with a space or is punct
-                    options.append(self.end_tokens[0])
-                    if any(any(subsubtrie for subsubtrie in subtrie) for subtrie in remaining_trie.values()):   # if we can skip a token without running out
-                        options.append(self.sep_tokens[0])
-                elif not options:
-                    options.extend(self.end_tokens)
-
-        return options
-
-
-    @functools.cache
-    def compute_remaining_trie(self, prefix):
-
-        if not prefix:
-            return self.only_start_of_words(self.trie)
-
-        remaining_trie = self.compute_remaining_trie(prefix[:-1])
-        i = prefix[-1]
-
-        if i not in self.special_tokens:
-            return remaining_trie.get(i, {})
-
-        if i in self.sep_tokens[:-1]:
-            return remaining_trie
-
-        if i == self.sep_tokens[-1]:
-            remaining_trie = merge_tries(*[self.only_start_of_words(subtrie) for subtrie in iter_subtries_recursively(remaining_trie)])
-
-        return remaining_trie
-
-
-    def only_start_of_words(self, trie, make_unspaced=False):
-        new_trie = {}
-        for j, subtrie in trie.items():
-            if (j_unspaced := self.map_to_unspaced_tokens.get(j, [])):
-                for key, val in prepend_path_to_trie(j_unspaced if make_unspaced else [j], subtrie).items():
-                    new_trie[key] = merge_tries(new_trie.get(key, {}), val)
-        return new_trie
 
 
 def get_json_part_ids(tokenizer):
@@ -155,88 +158,13 @@ def get_json_part_ids(tokenizer):
     json_part_ids = {}
     for key, json_part in json_parts.items():
         json_part_encoded = tokenizer.encode(json_part, add_special_tokens=False)
-        if len(json_part_encoded) != 1:
-            raise ValueError(f'Json part {json_part} is not a single token in this LLM.')   # TODO support this
-        json_part_ids[key] = json_part_encoded[-1]
+        json_part_ids[key] = json_part_encoded
     return json_part_ids
 
 
 def get_punctuation_ids(tokenizer):
     punct = '.!?,:;'
     return [tokenizer.encode(p, add_special_tokens=False)[0] for p in punct]
-
-
-
-## Here comes more abstract trie-related stuff
-
-def create_trie(sequence: list[int]) -> dict[int, dict]:
-    """
-    Computes a nested dict representing a trie storing all pathways through some sequence
-    (final nodes represented by {}).
-
-    >>> trie = create_trie([1, 4, 3, 1, 4, 6]); print(trie[1][4].keys())    # possible tokens after 1, 4
-    dict_keys([3, 6])
-    >>> create_trie([1, 4, 3, 1, 4, 6])
-    {1: {4: {3: {1: {4: {6: {}}}}, 6: {}}}, 4: {3: {1: {4: {6: {}}}}, 6: {}}, 3: {1: {4: {6: {}}}}, 6: {}}
-    """
-    trie = {}
-    for suffix in [sequence[i:] for i in range(len(sequence))]:
-        node = trie
-        for token in suffix:
-            if token not in node:
-                node[token] = {}
-            node = node[token]
-    return trie
-
-
-def prepend_path_to_trie(prefix: list[int], trie: dict[int, dict]) -> dict[int, dict]:
-    """
-    Extends an existing trie by prepending a path (thus prepending it to all pathways it represents).
-
-    >>> prepend_path_to_trie([1, 2, 3], {4: {5: {}}})
-    {1: {2: {3: {4: {5: {}}}}}}
-    >>> prepend_path_to_trie([], {4: {5: {}}})
-    {4: {5: {}}}
-    """
-    if not prefix:
-        return trie
-    return {prefix[0]: prepend_path_to_trie(prefix[1:], trie)}
-
-
-def iter_subtries_recursively(trie: dict[int, dict]) -> typing.Generator[dict[int, dict], None, None]:
-    """
-    Returns a generator yielding all sub-tries contained somewhere, recursively down, in the original trie.
-
-    >>> list(iter_subtries_recursively({1: {2: {3: {}}}}))
-    [{2: {3: {}}}, {3: {}}, {}]
-    >>> list(iter_subtries_recursively({1: {2: {1: {}}}, 4: {2: {1: {}}, 7: {}}, 2: {}, 9: {4: {}, 12: {13: {}}}}))
-    [{2: {1: {}}}, {1: {}}, {}, {2: {1: {}}, 7: {}}, {1: {}}, {}, {}, {}, {4: {}, 12: {13: {}}}, {}, {13: {}}, {}]
-    >>> list(iter_subtries_recursively({4: {3: {1: {4: {6: {}}}}, 6: {}}}))
-    [{3: {1: {4: {6: {}}}}, 6: {}}, {1: {4: {6: {}}}}, {4: {6: {}}}, {6: {}}, {}, {}]
-    """
-    for k, v in trie.items():
-        yield v
-        yield from iter_subtries_recursively(v)
-
-
-def merge_tries(*tries) -> dict:
-    """
-    Merge two or more tries to form a new trie, representing all pathways of the original ones.
-
-    >>> merge_tries({1: {}}, {2: {}})
-    {1: {}, 2: {}}
-    >>> merge_tries({1: {}, 2: {3: {}}}, {2: {4: {}}})
-    {1: {}, 2: {3: {}, 4: {}}}
-    >>> merge_tries({1: {2: {3: {}}, 4: {5: {}}}}, {2: {2: {4: {}, 6: {7: {}}}}})
-    {1: {2: {3: {}}, 4: {5: {}}}, 2: {2: {4: {}, 6: {7: {}}}}}
-    >>> merge_tries({1: {2: {}}}, {1: {3: {}}}, {1: {2: {5: {}}}})
-    {1: {2: {5: {}}, 3: {}}}
-    """
-    new_trie = {}
-    for key in set(itertools.chain(*(trie.keys() for trie in tries))):
-        subtries = (trie.get(key, {}) for trie in tries)
-        new_trie[key] = merge_tries(*subtries)
-    return new_trie
 
 
 def find_spans_for_multiquote(original: str, multiquote: list[str], must_exist=True, must_unique=False) -> list[dict]:
@@ -285,8 +213,6 @@ def find_spans_for_multiquote(original: str, multiquote: list[str], must_exist=T
 
     closest_multimatch = min(candidate_multimatches, key=lambda multimatch: max(m.span()[1] for m in multimatch) - min(m.span()[0] for m in multimatch))
     return [{'start': m.span()[0], 'end': m.span()[1], 'text': m.group()} for m in closest_multimatch]
-
-
 
 
 
