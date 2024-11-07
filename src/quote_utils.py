@@ -72,15 +72,24 @@ class QuoteParser:
 
         # clean up empty stacks, adding their resultant positions to current_pos:
         if self.stack:
-            self.current_pos.extend([p for s, p in self.stack if s == []])
+            self.current_pos.extend([p for s, p in self.stack if s == [] and p is not None])
             self.stack = [(s, p) for s, p in self.stack if s]
 
         logging.debug(f'Parsed: {i}\n  stack: {self.stack}\n  pos: {self.current_pos} \n     ({len(self.stack), len(self.current_pos)}')
 
-        options = [s[-1] for s, p in self.stack if s] + [self.original[p] for p in self.current_pos]
-        options += [self.sep_ids[-1], self.end_ids[-1]]  # TODO: sep only if pre-final;   TODO maybe end only if unique-determining quote?
+        options = [s[-1] for s, p in self.stack if s] + [self.original[p]
+                                                         for p in self.current_pos if p is not None]
 
-        return options
+        at_end_of_word = any(p in self.word_start_pos for p in self.current_pos)
+        some_later_words_left = any(q in self.word_start_pos
+                                    for p in self.current_pos if p is not None
+                                    for q in range(p+1, len(self.original)))
+        if self.current_pos and (at_end_of_word or not options):
+            options += [self.end_ids[-1]]
+        if at_end_of_word and some_later_words_left:
+            options += [self.sep_ids[-1]]
+
+        return set(options)
 
 
 class LogitsProcessorForMultiQuote(LogitsProcessor):
