@@ -11,15 +11,11 @@ import math
 import regex
 import itertools
 
-
+import string
 
 class QuoteParser:
 
-    def __init__(self, original_ids, map_to_unspaced, sep_ids, start_ids, end_ids, empty_ids, punctuation, start_quote_nospace):
-
-        # TODO: use punctuation too
-
-        # TODO: Make work with original_ids_grouped and map_to_unspaced_grouped
+    def __init__(self, original_ids, map_to_unspaced, sep_ids, start_ids, end_ids, empty_ids, start_quote_nospace):
 
         self.original = original_ids
         self.sep_ids = sep_ids[::-1]        # as stacks, to pop from the end
@@ -74,10 +70,14 @@ class QuoteParser:
             for p in self.current_pos:
                 if self.original[p][0] == i:
                     self.stack.append(([*self.original[p][::-1]], p + 1))
-                    if p + 1 < len(self.original):
-                        new_pos.append(p + 1)
+            new_stack = []
+            for s, p in self.stack:
+                if s.pop() == i:
+                    new_stack.append((s, p))
             self.current_pos = new_pos
-            self.stack = [(s, p) for s, p in self.stack if s.pop() == i]
+            self.stack = new_stack
+
+        # logging.debug(f'Parsed: {i}\n  stack: {self.stack}\n  pos: {self.current_pos}')
 
         # clean up empty stacks, adding their resultant positions to current_pos:
         if self.stack:
@@ -87,9 +87,9 @@ class QuoteParser:
         # Now to list the options and some special symbols:
         options = [s[-1] for s, p in self.stack if s] + [self.original[p][0] for p in self.current_pos if p is not None and p < len(self.original)]
 
-        if self.current_pos or not options:
+        if self.current_pos or not options and not i == self.sep_ids[0]:
             options.append(self.end_ids[-1])
-        if self.current_pos and any(p < len(self.original) for p in self.current_pos):
+        if self.current_pos and any(p + 2 < len(self.original) for p in self.current_pos) and i != self.sep_ids[0]:
             options.append(self.sep_ids[-1])
 
         return list(set(options))
@@ -109,7 +109,6 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         self.prompt_length = prompt_length
 
         json_parts = get_json_part_ids(self.tokenizer)
-        self.punctuation = get_punctuation_ids(self.tokenizer)
 
         self.sep_ids = [*json_parts['comma'], *json_parts['next']] if json else self.tokenizer.encode(sep, add_special_tokens=False)
         self.start_ids = [*json_parts['start']] if json else []
@@ -121,7 +120,7 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
 
         self.original_token_ids_grouped = [[]]
         for i, t in zip(original_token_ids, original_tokens):
-            if t.startswith(' '):
+            if t.startswith(' ') or t in string.punctuation:
                 self.original_token_ids_grouped.append([])
             self.original_token_ids_grouped[-1].append(i)
 
@@ -144,8 +143,7 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
 
             # TODO Caching; I should keep using the same QuoteParser for each beam
             parser = QuoteParser(self.original_token_ids_grouped, self.map_spaced_to_unspaced, self.sep_ids,
-                                 self.start_ids, self.end_ids, empty_ids=self.empty_ids,
-                                 punctuation=self.punctuation, start_quote_nospace=self.use_json_mode)
+                                 self.start_ids, self.end_ids, empty_ids=self.empty_ids, start_quote_nospace=self.use_json_mode)
             options = parser.next_iter(prefix)
 
             if not options:
@@ -175,11 +173,6 @@ def get_json_part_ids(tokenizer):
         json_part_encoded = tokenizer.encode(json_part, add_special_tokens=False)
         json_part_ids[key] = json_part_encoded
     return json_part_ids
-
-
-def get_punctuation_ids(tokenizer):
-    punct = '.!?,:;'
-    return [tokenizer.encode(p, add_special_tokens=False)[0] for p in punct]
 
 
 def find_spans_for_multiquote(original: str, multiquote: list[str], must_exist=True, must_unique=False) -> list[dict]:
