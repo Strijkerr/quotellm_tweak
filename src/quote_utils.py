@@ -10,28 +10,31 @@ import torch
 import math
 import regex
 import itertools
+import copy
 
 import string
 
-class OptionGiverForMultiQuote:
+class OptionsGenerator:
 
-    def __init__(self, original_ids, map_to_unspaced, start_ids, sep_ids, end_ids, empty_ids, start_quote_nospace):
+    def __init__(self, original_ids: list[int],
+                 map_to_unspaced: dict[tuple[int], tuple[int]],
+                 start_ids: list[int],
+                 sep_ids: list[int],
+                 end_ids: list[int],
+                 empty_ids: list[int],
+                 start_quote_nospace: bool):
 
         self.original = original_ids
-        self.sep_ids = sep_ids[::-1]        # as stacks, to pop from the end
+        self.sep_ids = sep_ids[::-1]        # store as stacks, to pop from the end
         self.start_ids = start_ids[::-1]
         self.end_ids = end_ids[::-1]
         self.start_quote_nospace = start_quote_nospace
         self.empty_ids = empty_ids[::-1] if empty_ids is not None else None
-        self.allow_empty = self.empty_ids is not None
-
         self.map_to_unspaced = map_to_unspaced
 
-        self.id_to_pos = {pos: id for pos, id in enumerate(self.original)}
-
-        self.current_pos = None
+        #
+        self.current_positions = None
         self.stack = None
-
 
     def next_iter(self, prefix):
         options = self.next(None)
@@ -39,57 +42,55 @@ class OptionGiverForMultiQuote:
             options = self.next(i)
         return options
 
-
-    def next(self, i=None):
+    def next(self, i: int | None = None):
 
         # now we process the token id i:
         if i is None:   # first function call, start of list
             # Only start from whole words
-            self.current_pos = []
+            self.current_positions = []
             # ensure spaceless start, for both json and non-json mode:
             self.stack = [([*self.map_to_unspaced.get(self.original[p], self.original[p])[::-1], *self.start_ids], (p + 1 if p + 1 < len(self.original) else None)) for p in range(len(self.original))]
-            if self.allow_empty:
+            if self.empty_ids is not None:
                 self.stack.append(([*self.empty_ids], 0))
-            self.current_pos = []
 
         elif i == self.sep_ids[-1]:    # end of quote
             # Only continue from whole words, starting two tokens to the right
-            min_pos = min(self.current_pos) + 2
-            self.current_pos = []
+            min_pos = min(self.current_positions) + 2
+            self.current_positions = []
             if self.start_quote_nospace:   # ensure spaceless start, only for json mode
                 self.stack = [([*self.map_to_unspaced.get(self.original[p], self.original[p])[::-1], *self.sep_ids[:-1]], (p + 1 if p + 1 < len(self.original) else None)) for p in range(min_pos, len(self.original))]  # expect spaceless subtokens instead
             else:
                 self.stack = [(self.sep_ids[:-1], p) for p in range(min_pos, len(self.original))]
 
         elif i == self.end_ids[-1]:  # end of list
-            self.current_pos = []
+            self.current_positions = []
             self.stack = [(self.end_ids[:-1], None)]
 
         else:  # consume stacked or original token
             new_pos = []
-            for p in self.current_pos:
+            for p in self.current_positions:
                 if self.original[p][0] == i:
                     self.stack.append(([*self.original[p][::-1]], (p + 1 if p + 1 < len(self.original) else None)))
             new_stack = []
             for s, p in self.stack:
                 if s.pop() == i:
                     new_stack.append((s, p))
-            self.current_pos = new_pos
+            self.current_positions = new_pos
             self.stack = new_stack
 
         # logging.debug(f'Parsed: {i}\n  stack: {self.stack}\n  pos: {self.current_pos}')
 
         # clean up empty stacks, adding their resultant positions to current_pos:
         if self.stack:
-            self.current_pos.extend([p for s, p in self.stack if s == [] and p is not None])
+            self.current_positions.extend([p for s, p in self.stack if s == [] and p is not None])
             self.stack = [(s, p) for s, p in self.stack if s]
 
         # Now to list the options and some special symbols:
-        options = [s[-1] for s, p in self.stack if s] + [self.original[p][0] for p in self.current_pos if p is not None and p < len(self.original)]
+        options = [s[-1] for s, p in self.stack if s] + [self.original[p][0] for p in self.current_positions if p is not None and p < len(self.original)]
 
-        if self.current_pos or not options and not i == self.sep_ids[0]:
+        if self.current_positions or not options and not i == self.sep_ids[0]:
             options.append(self.end_ids[-1])
-        if self.current_pos and any(p + 2 < len(self.original) for p in self.current_pos) and i != self.sep_ids[0]:
+        if self.current_positions and any(p + 2 < len(self.original) for p in self.current_positions) and i != self.sep_ids[0]:
             options.append(self.sep_ids[-1])
 
         return list(set(options))
@@ -97,48 +98,45 @@ class OptionGiverForMultiQuote:
 
 class LogitsProcessorForMultiQuote(LogitsProcessor):
 
-    def __init__(self, original: str, tokenizer, prompt_length: int, allow_empty: bool = False, json=False, sep='...') -> None:
+    def __init__(self, original: str, tokenizer, prompt_length: int, allow_empty: bool = False, force_json_response: bool = False, sep: str = '...') -> None:
+
         self.tokenizer = tokenizer
-        self.use_json_mode = json
-        self.prompt_length = prompt_length
+        self.start_constrained_generation_from = prompt_length
 
         json_parts = get_json_part_ids(self.tokenizer)
 
-        self.sep_ids = [*json_parts['comma'], *json_parts['next']] if json else self.tokenizer.encode(sep, add_special_tokens=False)
-        self.start_ids = [*json_parts['start']] if json else []
-        self.empty_ids = ([*json_parts['start_empty'], *json_parts['end_empty']] if json else []) if allow_empty else None
-        self.end_ids = [*json_parts['end'], tokenizer.eos_token_id] if json else [tokenizer.eos_token_id]
+        token_ids_by_word = [[]]
+        for tok_id in tokenizer.encode(original, add_special_tokens=False):
+            tok_str = tokenizer.decode(tok_id, skip_special_tokens=True)
+            if tok_str.startswith(' ') or all(c in string.punctuation for c in tok_str):
+                token_ids_by_word.append([])
+            token_ids_by_word[-1].append(tok_id)
+        token_ids_by_word = [tuple(t) for t in token_ids_by_word]
 
-        original_token_ids = tokenizer.encode(original, add_special_tokens=False)
-        original_tokens = [tokenizer.decode(i, skip_special_tokens=True) for i in original_token_ids]
-
-        self.original_token_ids_grouped = [[]]
-        for i, t in zip(original_token_ids, original_tokens):
-            if t.startswith(' ') or t in string.punctuation:
-                self.original_token_ids_grouped.append([])
-            self.original_token_ids_grouped[-1].append(i)
-
-        self.original_token_ids_grouped = [tuple(t) for t in self.original_token_ids_grouped]
-
-        self.map_spaced_to_unspaced = {}
-        for t in self.original_token_ids_grouped:
-            decoded = tokenizer.decode(t, skip_special_tokens=True)
+        map_spaced_to_unspaced = {}
+        for tok_ids in token_ids_by_word:
+            decoded = tokenizer.decode(tok_ids, skip_special_tokens=True)
             stripped = decoded.lstrip()
-            new_t = tuple(tokenizer.encode(stripped, add_special_tokens=False))
-            self.map_spaced_to_unspaced[t] = new_t
+            tok_ids_nospace = tuple(tokenizer.encode(stripped, add_special_tokens=False))
+            map_spaced_to_unspaced[tok_ids] = tok_ids_nospace
 
+        self.kwargs_for_optionsgenerator = {
+            'original_ids': token_ids_by_word,
+            'map_to_unspaced': map_spaced_to_unspaced,
+            'start_ids': [*json_parts['start']] if force_json_response else [],
+            'sep_ids': [*json_parts['comma'], *json_parts['next']] if force_json_response else self.tokenizer.encode(sep, add_special_tokens=False),
+            'empty_ids': ([*json_parts['start_empty'], *json_parts['end_empty']] if force_json_response else []) if allow_empty else None,
+            'end_ids': [*json_parts['end'], tokenizer.eos_token_id] if force_json_response else [tokenizer.eos_token_id],
+            'start_quote_nospace': force_json_response,
+        }
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
 
-        beam_prefixes = input_ids[:, self.prompt_length:]
+        beam_prefixes = input_ids[:, self.start_constrained_generation_from:]
         for beam_n, prefix in enumerate(beam_prefixes):
 
-            # TODO Caching; I should keep using the same QuoteParser for each beam; except the beams are different each time...
-            #   And it requires caching not only the prefix[:-1], but also the stack and current_pos at that point.
-            option_giver = OptionGiverForMultiQuote(self.original_token_ids_grouped, self.map_spaced_to_unspaced,
-                                                    self.start_ids, self.sep_ids, self.end_ids,
-                                                    empty_ids=self.empty_ids, start_quote_nospace=self.use_json_mode)
-            options = option_giver.next_iter(prefix)
+            # TODO Caching? Kinda hard with multiple beams (and beams change), and probably not a huge time saver.
+            options = OptionsGenerator(**self.kwargs_for_optionsgenerator).next_iter(prefix)
 
             if not options:
                 logging.warning(f'No options for next word! This shouldn\'t really happen... {self.tokenizer.decode(prefix)}')
