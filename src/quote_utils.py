@@ -133,7 +133,8 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         beam_prefixes = input_ids[:, self.prompt_length:]
         for beam_n, prefix in enumerate(beam_prefixes):
 
-            # TODO Caching; I should keep using the same QuoteParser for each beam
+            # TODO Caching; I should keep using the same QuoteParser for each beam; except the beams are different each time...
+            #   And it requires caching not only the prefix[:-1], but also the stack and current_pos at that point.
             option_giver = OptionGiverForMultiQuote(self.original_token_ids_grouped, self.map_spaced_to_unspaced,
                                                     self.start_ids, self.sep_ids, self.end_ids,
                                                     empty_ids=self.empty_ids, start_quote_nospace=self.use_json_mode)
