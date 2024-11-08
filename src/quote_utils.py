@@ -19,18 +19,19 @@ class QuoteParser:
 
         # TODO: use punctuation too
 
+        # TODO: Make work with original_ids_grouped and map_to_unspaced_grouped
+
         self.original = original_ids
         self.sep_ids = sep_ids[::-1]        # as stacks, to pop from the end
         self.start_ids = start_ids[::-1]
         self.end_ids = end_ids[::-1]
         self.start_quote_nospace = start_quote_nospace
-        self.empty_ids = empty_ids
+        self.empty_ids = empty_ids[::-1]
         self.allow_empty = bool(self.empty_ids)
 
         self.map_to_unspaced = map_to_unspaced
 
         self.id_to_pos = {pos: id for pos, id in enumerate(self.original)}
-        self.word_start_pos = set(pos for pos, id in enumerate(self.original) if pos == 0 or id in self.map_to_unspaced)
 
         self.current_pos = None
         self.stack = None
@@ -50,28 +51,32 @@ class QuoteParser:
             # Only start from whole words
             self.current_pos = []
             # ensure spaceless start, for both json and non-json mode:
-            self.stack = [(self.map_to_unspaced.get(self.original[p], [self.original[p]])[::-1] + self.start_ids, p + 1) for p in self.word_start_pos if p + 1 < len(self.original)]
+            self.stack = [([*self.map_to_unspaced.get(self.original[p], self.original[p])[::-1], *self.start_ids], p + 1) for p in range(len(self.original))]
             if self.allow_empty:
-                self.stack.append((self.empty_ids[::-1], 0))
+                self.stack.append(([*self.empty_ids], 0))
             self.current_pos = []
-            # TODO: This presupposes substitution can be done per-subtoken... Revise this later.
 
         elif i == self.sep_ids[-1]:    # end of quote
             # Only continue from whole words, starting two tokens to the right
             min_pos = min(self.current_pos) + 2
             self.current_pos = []
-            if self.json:   # ensure spaceless start, only for json mode
-                self.stack = [(self.map_to_unspaced.get(self.original[p], [self.original[p]])[::-1] + self.sep_ids[:-1], p + 1) for p in self.word_start_pos if p > min_pos]  # expect spaceless subtokens instead
-                # TODO: See previous.
+            if self.start_quote_nospace:   # ensure spaceless start, only for json mode
+                self.stack = [([*self.map_to_unspaced.get(self.original[p], self.original[p])[::-1], *self.sep_ids[:-1]], p + 1) for p in range(min_pos, len(self.original))]  # expect spaceless subtokens instead
             else:
-                self.stack = [(self.sep_ids[:-1], p) for p in self.word_start_pos if p > min_pos]
+                self.stack = [(self.sep_ids[:-1], p) for p in range(min_pos, len(self.original))]
 
         elif i == self.end_ids[-1]:  # end of list
             self.current_pos = []
             self.stack = [(self.end_ids[:-1], None)]
 
         else:  # consume stacked or original token
-            self.current_pos = [p + 1 for p in self.current_pos if p + 1 < len(self.original) and self.original[p] == i]
+            new_pos = []
+            for p in self.current_pos:
+                if self.original[p][0] == i:
+                    self.stack.append(([*self.original[p][::-1]], p + 1))
+                    if p + 1 < len(self.original):
+                        new_pos.append(p + 1)
+            self.current_pos = new_pos
             self.stack = [(s, p) for s, p in self.stack if s.pop() == i]
 
         # clean up empty stacks, adding their resultant positions to current_pos:
@@ -82,19 +87,14 @@ class QuoteParser:
         logging.debug(f'Parsed: {i}\n  stack: {self.stack}\n  pos: {self.current_pos}')
 
         # Now to list the options and some special symbols:
-        options = [s[-1] for s, p in self.stack if s] + [self.original[p]
-                                                         for p in self.current_pos if p is not None]
+        options = [s[-1] for s, p in self.stack if s] + [self.original[p][0] for p in self.current_pos if p is not None]
 
-        at_end_of_word = any(p in self.word_start_pos for p in self.current_pos)
-        some_later_words_left = any(q in self.word_start_pos
-                                    for p in self.current_pos if p is not None
-                                    for q in range(p+1, len(self.original)))
-        if self.current_pos and (at_end_of_word or not options):
-            options += [self.end_ids[-1]]
-        if at_end_of_word and some_later_words_left:
-            options += [self.sep_ids[-1]]
+        if self.current_pos or not options:
+            options.append(self.end_ids[-1])
+        if self.current_pos and any(p < len(self.original) for p in self.current_pos):
+            options.append(self.sep_ids[-1])
 
-        return options
+        return set(options)
 
 
 class LogitsProcessorForMultiQuote(LogitsProcessor):
