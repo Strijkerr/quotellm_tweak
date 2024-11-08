@@ -81,7 +81,7 @@ def main():
         prompt = prompt_template.format(original=original_text, rephrased=rephrased)
         original_text = original_text.replace('"', '\"')  # to avoid JSON problems
 
-        inputs = tokenizer.encode(prompt, return_tensors="pt").to('cuda')
+        inputs = tokenizer.encode(prompt, return_tensors="pt")
         lp = LogitsProcessorForMultiQuote(original_text, tokenizer, prompt_length=inputs.shape[-1], json=args.json, sep=args.sep)
         response = generate(inputs, logits_processor=LogitsProcessorList([lp]))
         result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)

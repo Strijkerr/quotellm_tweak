@@ -84,17 +84,15 @@ class QuoteParser:
             self.current_pos.extend([p for s, p in self.stack if s == [] and p is not None])
             self.stack = [(s, p) for s, p in self.stack if s]
 
-        logging.debug(f'Parsed: {i}\n  stack: {self.stack}\n  pos: {self.current_pos}')
-
         # Now to list the options and some special symbols:
-        options = [s[-1] for s, p in self.stack if s] + [self.original[p][0] for p in self.current_pos if p is not None]
+        options = [s[-1] for s, p in self.stack if s] + [self.original[p][0] for p in self.current_pos if p is not None and p < len(self.original)]
 
         if self.current_pos or not options:
             options.append(self.end_ids[-1])
         if self.current_pos and any(p < len(self.original) for p in self.current_pos):
             options.append(self.sep_ids[-1])
 
-        return set(options)
+        return list(set(options))
 
 
 class LogitsProcessorForMultiQuote(LogitsProcessor):
@@ -110,7 +108,7 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         self.use_json_mode = json
         self.prompt_length = prompt_length
 
-        self.json_parts = get_json_part_ids(self.tokenizer)
+        json_parts = get_json_part_ids(self.tokenizer)
         self.punctuation = get_punctuation_ids(self.tokenizer)
 
         self.sep_ids = [*json_parts['comma'], *json_parts['next']] if json else self.tokenizer.encode(sep, add_special_tokens=False)
