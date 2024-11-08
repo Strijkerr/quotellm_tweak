@@ -47,7 +47,7 @@ class OptionGiverForMultiQuote:
             # Only start from whole words
             self.current_pos = []
             # ensure spaceless start, for both json and non-json mode:
-            self.stack = [([*self.map_to_unspaced.get(self.original[p], self.original[p])[::-1], *self.start_ids], p + 1) for p in range(len(self.original))]
+            self.stack = [([*self.map_to_unspaced.get(self.original[p], self.original[p])[::-1], *self.start_ids], (p + 1 if p + 1 < len(self.original) else None)) for p in range(len(self.original))]
             if self.allow_empty:
                 self.stack.append(([*self.empty_ids], 0))
             self.current_pos = []
@@ -57,7 +57,7 @@ class OptionGiverForMultiQuote:
             min_pos = min(self.current_pos) + 2
             self.current_pos = []
             if self.start_quote_nospace:   # ensure spaceless start, only for json mode
-                self.stack = [([*self.map_to_unspaced.get(self.original[p], self.original[p])[::-1], *self.sep_ids[:-1]], p + 1) for p in range(min_pos, len(self.original))]  # expect spaceless subtokens instead
+                self.stack = [([*self.map_to_unspaced.get(self.original[p], self.original[p])[::-1], *self.sep_ids[:-1]], (p + 1 if p + 1 < len(self.original) else None)) for p in range(min_pos, len(self.original))]  # expect spaceless subtokens instead
             else:
                 self.stack = [(self.sep_ids[:-1], p) for p in range(min_pos, len(self.original))]
 
@@ -69,7 +69,7 @@ class OptionGiverForMultiQuote:
             new_pos = []
             for p in self.current_pos:
                 if self.original[p][0] == i:
-                    self.stack.append(([*self.original[p][::-1]], p + 1))
+                    self.stack.append(([*self.original[p][::-1]], (p + 1 if p + 1 < len(self.original) else None)))
             new_stack = []
             for s, p in self.stack:
                 if s.pop() == i:
