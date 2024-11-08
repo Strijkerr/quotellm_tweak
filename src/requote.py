@@ -1,5 +1,7 @@
 import argparse
 import sys
+
+import torch.cuda
 from transformers import LogitsProcessorList, AutoModelForCausalLM, AutoTokenizer
 from quote_utils import LogitsProcessorForMultiQuote, find_spans_for_multiquote
 import csv
@@ -41,7 +43,7 @@ def main():
     args = argparser.parse_args()
 
     if args.verbose:
-        logging.basicConfig(level=logging.DEBUG, format='ReQuote %(levelname)s: %(message)s')
+        logging.basicConfig(level=logging.DEBUG, format='')
 
     logging.info(json.dumps({k: v for k, v in args.__dict__.items() if k not in ['file', 'prompt']}, indent='  '))
 
@@ -70,8 +72,9 @@ def main():
     stats_keeper = []
 
     for n, (original_text, rephrased) in enumerate(csv.reader(args.file)):
-        logging.info(f'Original:  {original_text}')
-        logging.info(f'Rephrased: {rephrased}')
+        logging.debug(f'----- {n} -----')
+        logging.debug(f'Original:  {original_text}')
+        logging.debug(f'Rephrased: {rephrased}')
 
         if not args.noshortcut:
             try:
@@ -82,7 +85,7 @@ def main():
                 pass
             else:
                 stats_keeper.append(stats_to_record(original_text, rephrased, result_with_spans, shortcut_used=True))
-                logging.info(f'Shortcut used!')
+                logging.debug(f'Shortcut used!')
                 print(json.dumps(result_with_spans))
                 continue
 
@@ -101,7 +104,13 @@ def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephr
     inputs = tokenizer.encode(prompt, return_tensors="pt")
     lp = LogitsProcessorForMultiQuote(original_text, tokenizer, prompt_length=inputs.shape[-1],
                                       force_json_response=force_json, sep=sep)
-    response = generator(inputs, logits_processor=LogitsProcessorList([lp]))
+
+    try:
+        response = generator(inputs, logits_processor=LogitsProcessorList([lp]))
+    except torch.cuda.OutOfMemoryError:
+        logging.warning('CUDA out of memory: Retrying with cache offloaded.')
+        response = generator(inputs, logits_processor=LogitsProcessorList([lp]), cache_implementation="offloaded")
+
     result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
 
     if len(response) >= MAX_TOKENS:
@@ -113,7 +122,7 @@ def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephr
             result_str += '"'
         result_str += ']'
 
-    logging.info(f'Response: {result_str}')
+    logging.debug(f'Response: {result_str}')
 
     result_list = json.loads(result_str) if force_json else [s.strip() for s in result_str.split(sep)]
     result_with_spans = find_spans_for_multiquote(original_text, result_list, must_exist=True, must_unique=False)
