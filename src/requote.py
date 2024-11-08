@@ -143,7 +143,7 @@ def log_stats_summary(stats_keeper: list[dict]) -> None:
         stats_lists: dict[str, list] = {k: [dic[k] for dic in stats_keeper] for k in stats_keeper[0]}
 
         for key, stats_list in stats_lists.items():
-            logging.info(f'{label},{key},{numpy.mean(stats_list)},{numpy.std(stats_list)}')
+            logging.info(f'{label},{key},{numpy.mean(stats_list):.2f},{numpy.std(stats_list):.2f}')
     logging.info('========================')
 
 
