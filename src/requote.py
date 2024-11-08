@@ -57,19 +57,27 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, clean_up_tokenization_spaces=False)  # clean up changes e.g. " ." to "."
     model = AutoModelForCausalLM.from_pretrained(args.model)
-    generate = functools.partial(model.generate, max_new_tokens=MAX_TOKENS, do_sample=args.temp is not None,
-                                 num_beams=args.beams, temperature=args.temp, top_k=args.topk, top_p=args.topp, length_penalty=args.quote_verbosity)
+    generator = functools.partial(model.generate, max_new_tokens=MAX_TOKENS, do_sample=args.temp is not None,
+                                  num_beams=args.beams, temperature=args.temp, top_k=args.topk, top_p=args.topp,
+                                  length_penalty=args.quote_verbosity)
+    do_prompt = functools.partial(prompt_for_quote,
+                                  generator=generator,
+                                  tokenizer=tokenizer,
+                                  prompt_template=prompt_template,
+                                  force_json=args.json,
+                                  sep=args.sep)
 
     stats_keeper = []
 
     for n, (original_text, rephrased) in enumerate(csv.reader(args.file)):
-
         logging.info(f'Original:  {original_text}')
         logging.info(f'Rephrased: {rephrased}')
 
         if not args.noshortcut:
             try:
-                result_with_spans = find_spans_for_multiquote(original_text.lower(), [rephrased.lower()], must_exist=True, must_unique=False)
+                result_with_spans = find_spans_for_multiquote(
+                    original_text.lower(), [rephrased.lower()], must_exist=True, must_unique=False
+                )
             except ValueError:
                 pass
             else:
@@ -78,36 +86,38 @@ def main():
                 print(json.dumps(result_with_spans))
                 continue
 
-        prompt = prompt_template.format(original=original_text, rephrased=rephrased)
-        original_text = original_text.replace('"', '\"')  # to avoid JSON problems
-
-        inputs = tokenizer.encode(prompt, return_tensors="pt")
-        lp = LogitsProcessorForMultiQuote(original_text, tokenizer, prompt_length=inputs.shape[-1], force_json_response=args.json, sep=args.sep)
-        response = generate(inputs, logits_processor=LogitsProcessorList([lp]))
-        result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
-
-        if len(response) >= MAX_TOKENS:
-            logging.warning('Response at MAX_TOKENS, a currently hard-coded limit (but feel free to edit the source); this should not really happen and means the response is probably truncated/bad.')
-        if args.json and not result_str.endswith('"]'):
-            logging.warning('Truncated JSON response string; appending "], but the response is probably bad.')
-            if not result_str.endswith('"'):
-                result_str += '"'
-            result_str += ']'
-
-        logging.info(f'Response: {result_str}')
-
-        if args.json:
-            result_list = json.loads(result_str)
-        else:
-            result_list = [s.strip() for s in result_str.split(args.sep)]
-
-        result_with_spans = find_spans_for_multiquote(original_text, result_list, must_exist=True, must_unique=False)
-
+        result_with_spans = do_prompt(original_text=original_text, rephrased=rephrased)
         stats_keeper.append(stats_to_record(original_text, rephrased, result_with_spans))
-
         print(json.dumps(result_with_spans))
 
     log_stats_summary(stats_keeper)
+
+
+def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephrased, force_json=False, sep='...'):
+
+    prompt = prompt_template.format(original=original_text, rephrased=rephrased)
+    original_text = original_text.replace('"', '\"')  # to avoid JSON problems
+
+    inputs = tokenizer.encode(prompt, return_tensors="pt")
+    lp = LogitsProcessorForMultiQuote(original_text, tokenizer, prompt_length=inputs.shape[-1],
+                                      force_json_response=force_json, sep=sep)
+    response = generator(inputs, logits_processor=LogitsProcessorList([lp]))
+    result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
+
+    if len(response) >= MAX_TOKENS:
+        logging.warning('Response at MAX_TOKENS, a currently hard-coded limit (but feel free to edit the source); '
+                        'this should not really happen and means the response is probably truncated/bad.')
+    if force_json and not result_str.endswith('"]'):
+        logging.warning('Truncated JSON response string; appending "], but the response is probably bad.')
+        if not result_str.endswith('"'):
+            result_str += '"'
+        result_str += ']'
+
+    logging.info(f'Response: {result_str}')
+
+    result_list = json.loads(result_str) if force_json else [s.strip() for s in result_str.split(sep)]
+    result_with_spans = find_spans_for_multiquote(original_text, result_list, must_exist=True, must_unique=False)
+    return result_with_spans
 
 
 def create_prompt_template(system_prompt: str, prompt_template: str, examples: list[dict], json_format=False, sep='...') -> str:
