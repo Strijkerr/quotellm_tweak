@@ -26,8 +26,8 @@ class QuoteParser:
         self.start_ids = start_ids[::-1]
         self.end_ids = end_ids[::-1]
         self.start_quote_nospace = start_quote_nospace
-        self.empty_ids = empty_ids[::-1]
-        self.allow_empty = bool(self.empty_ids)
+        self.empty_ids = empty_ids[::-1] if empty_ids is not None else None
+        self.allow_empty = self.empty_ids is not None
 
         self.map_to_unspaced = map_to_unspaced
 
@@ -106,33 +106,35 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
     """
 
     def __init__(self, original, tokenizer, prompt_length: int, allow_empty: bool = False, json=False, sep='...') -> None:
-        self.prompt_length = prompt_length
-        self.allow_empty = allow_empty
-        self.original = ' ' + original  # To make sure all words, including the first, are preceded by a space.
-
         self.tokenizer = tokenizer
-        self.eos_token_id = tokenizer.eos_token_id if isinstance(tokenizer.eos_token_id, list) else [tokenizer.eos_token_id]
-
-        self.sep = self.tokenizer.encode(sep, add_special_tokens=False)
-        self.json = json
+        self.use_json_mode = json
+        self.prompt_length = prompt_length
 
         self.json_parts = get_json_part_ids(self.tokenizer)
         self.punctuation = get_punctuation_ids(self.tokenizer)
 
-        self.sep_tokens = [self.json_parts['comma'], self.json_parts['next']] if json else self.sep
-        self.special_tokens = self.json_parts.values() if json else self.sep
-        self.new_quote_tokens = [self.json_parts['next'], self.json_parts['start']] if json else self.sep
-        self.end_tokens = [self.json_parts['end']] if json else [self.eos_token_id[0]]
+        self.sep_ids = [*json_parts['comma'], *json_parts['next']] if json else self.tokenizer.encode(sep, add_special_tokens=False)
+        self.start_ids = [*json_parts['start']] if json else []
+        self.empty_ids = ([*json_parts['start_empty'], *json_parts['end_empty']] if json else []) if allow_empty else None
+        self.end_ids = [*json_parts['end'], tokenizer.eos_token_id] if json else [tokenizer.eos_token_id]
 
-        self.original_token_ids = tokenizer(self.original)["input_ids"]
-        # self.trie = create_trie(self.original_token_ids)
-        self.map_to_unspaced_tokens = {}
-        self.map_to_spaced_tokens = {}
-        for id in self.original_token_ids:
-            token = tokenizer.decode(id)
-            token_stripped = token.lstrip()
-            if token != token_stripped or id == self.original_token_ids[1]:  # also for first token, even if it isn't spaced
-                self.map_to_unspaced_tokens[id] = tokenizer.encode(token_stripped, add_special_tokens=False)
+        original_token_ids = tokenizer.encode(original, add_special_tokens=False)
+        original_tokens = [tokenizer.decode(i, skip_special_tokens=True) for i in original_token_ids]
+
+        self.original_token_ids_grouped = [[]]
+        for i, t in zip(original_token_ids, original_tokens):
+            if t.startswith(' '):
+                self.original_token_ids_grouped.append([])
+            self.original_token_ids_grouped[-1].append(i)
+
+        self.original_token_ids_grouped = [tuple(t) for t in self.original_token_ids_grouped]
+
+        self.map_spaced_to_unspaced = {}
+        for t in self.original_token_ids_grouped:
+            decoded = tokenizer.decode(t, skip_special_tokens=True)
+            stripped = decoded.lstrip()
+            new_t = tuple(tokenizer.encode(stripped, add_special_tokens=False))
+            self.map_spaced_to_unspaced[t] = new_t
 
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
@@ -142,11 +144,11 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
         beam_prefixes = input_ids[:, self.prompt_length:]
         for beam_n, prefix in enumerate(beam_prefixes):
 
-            # TODO Caching
-            parser = QuoteParser(self.original_token_ids, self.map_to_unspaced_tokens, self.sep_tokens, self.json_parts['start'], self.json_parts['end'] + [self.eos_token_id[0]], empty_ids=self.json_parts['start_empty'] + self.json_parts['end_empty'], punctuation=self.punctuation, start_quote_nospace=self.json)
-            options = parser.next(None)
-            for i in prefix:
-                options = parser.next(i)
+            # TODO Caching; I should keep using the same QuoteParser for each beam
+            parser = QuoteParser(self.original_token_ids_grouped, self.map_spaced_to_unspaced, self.sep_ids,
+                                 self.start_ids, self.end_ids, empty_ids=self.empty_ids,
+                                 punctuation=self.punctuation, start_quote_nospace=self.use_json_mode)
+            options = parser.next_iter(prefix)
 
             if not options:
                 logging.warning(f'No options for next word! This shouldn\'t really happen... {self.tokenizer.decode(prefix)}')
