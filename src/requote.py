@@ -118,8 +118,13 @@ def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephr
     try:
         response = generator(inputs, logits_processor=LogitsProcessorList([lp]))
     except torch.cuda.OutOfMemoryError:
-        logging.warning('CUDA out of memory: Retrying with cache offloaded.')
-        response = generator(inputs, logits_processor=LogitsProcessorList([lp]), cache_implementation="offloaded")
+        try:
+            logging.warning('CUDA out of memory: Retrying with cache offloaded.')
+            response = generator(inputs, logits_processor=LogitsProcessorList([lp]), cache_implementation="offloaded")
+        except torch.cuda.OutOfMemoryError:
+            logging.warning('CUDA out of memory again: Retrying with cache disabled.')
+            response = generator(inputs, logits_processor=LogitsProcessorList([lp]), use_cache=False)
+
 
     result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
 
