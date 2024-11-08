@@ -13,9 +13,9 @@ import itertools
 
 import string
 
-class QuoteParser:
+class OptionGiverForMultiQuote:
 
-    def __init__(self, original_ids, map_to_unspaced, sep_ids, start_ids, end_ids, empty_ids, start_quote_nospace):
+    def __init__(self, original_ids, map_to_unspaced, start_ids, sep_ids, end_ids, empty_ids, start_quote_nospace):
 
         self.original = original_ids
         self.sep_ids = sep_ids[::-1]        # as stacks, to pop from the end
@@ -97,13 +97,7 @@ class QuoteParser:
 
 class LogitsProcessorForMultiQuote(LogitsProcessor):
 
-    """
-    This class and associated functions based on https://yonigottesman.github.io/2023/08/10/extractive-generative.html
-    A list of LogitsProcessor instances can be passed into the transformers model.generate function, to filter/modify
-    the logits prior to sampling for generation.
-    """
-
-    def __init__(self, original, tokenizer, prompt_length: int, allow_empty: bool = False, json=False, sep='...') -> None:
+    def __init__(self, original: str, tokenizer, prompt_length: int, allow_empty: bool = False, json=False, sep='...') -> None:
         self.tokenizer = tokenizer
         self.use_json_mode = json
         self.prompt_length = prompt_length
@@ -135,16 +129,15 @@ class LogitsProcessorForMultiQuote(LogitsProcessor):
 
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
-        """
-        Takes input_ids and logit scores, returns modified/filtered logit scores based on options for next token.
-        """
+
         beam_prefixes = input_ids[:, self.prompt_length:]
         for beam_n, prefix in enumerate(beam_prefixes):
 
             # TODO Caching; I should keep using the same QuoteParser for each beam
-            parser = QuoteParser(self.original_token_ids_grouped, self.map_spaced_to_unspaced, self.sep_ids,
-                                 self.start_ids, self.end_ids, empty_ids=self.empty_ids, start_quote_nospace=self.use_json_mode)
-            options = parser.next_iter(prefix)
+            option_giver = OptionGiverForMultiQuote(self.original_token_ids_grouped, self.map_spaced_to_unspaced,
+                                                    self.start_ids, self.sep_ids, self.end_ids,
+                                                    empty_ids=self.empty_ids, start_quote_nospace=self.use_json_mode)
+            options = option_giver.next_iter(prefix)
 
             if not options:
                 logging.warning(f'No options for next word! This shouldn\'t really happen... {self.tokenizer.decode(prefix)}')
