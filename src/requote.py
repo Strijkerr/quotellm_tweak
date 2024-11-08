@@ -3,7 +3,7 @@ import sys
 
 import torch.cuda
 from transformers import LogitsProcessorList, AutoModelForCausalLM, AutoTokenizer
-from quote_utils import LogitsProcessorForMultiQuote, find_spans_for_multiquote
+from quote_utils import LogitsProcessorForQuotes, find_spans_for_multiquote
 import csv
 import logging
 import functools
@@ -26,19 +26,20 @@ def main():
 
     argparser = argparse.ArgumentParser(description='CLI for matching paraphrases of components of a text, to literal quotes in that text.')
     argparser.add_argument('file', nargs='?', type=argparse.FileType('r'), default=sys.stdin, help='Input file with pairs original,rephrased per line (csv); when omitted read from stdin.')
-    argparser.add_argument('--prompt', required=False, type=argparse.FileType('r'), default=None, help='.jsonl file with system prompt, prompt template, and examples (keys original, rephrased (list), response)')
 
-    argparser.add_argument('--noshortcut', action='store_true', help='To *not* bypass the LLM, even if the rephrase is already a literal quote.')
+    # Prompting style params:
+    argparser.add_argument('--prompt', required=False, type=argparse.FileType('r'), default=None, help='.jsonl file with system prompt, prompt template, and examples (keys original, rephrased (list), response)')
     argparser.add_argument('--json', action='store_true', help='To force model to output json list of strings; otherwise strings separated by --sep')
     argparser.add_argument('--sep', required=False, type=str, default='...', help='If not --json, this is the separator string to be used.')
 
+    # Transformer params:
     argparser.add_argument('--model', required=False, default="unsloth/llama-3-70b-bnb-4bit", type=str)  # test: xiaodongguaAIGC/llama-3-debug
     argparser.add_argument('--temp', required=False, type=float, help='Temperature', default=None)
     argparser.add_argument('--topp', required=False, type=float, help='Sample only from top p portion of probability distribution', default=None)
     argparser.add_argument('--topk', required=False, type=int, help='Sample only from top k tokens with max probability', default=None)
     argparser.add_argument('--beams', required=False, type=int, help='number of beams to search (does not work well with constrained generation)', default=1)
-
     argparser.add_argument('--quote-verbosity', required=False, type=float, help='Only used if --beams > 1. Positive to favor longer quotes, negative to favor shorter ones.', default=0.0)
+
     argparser.add_argument('-v', '--verbose', action='store_true', help='To show debug messages.')
     args = argparser.parse_args()
 
@@ -76,19 +77,20 @@ def main():
         logging.debug(f'Original:  {original_text}')
         logging.debug(f'Rephrased: {rephrased}')
 
-        if not args.noshortcut:
-            try:
-                result_with_spans = find_spans_for_multiquote(
-                    original_text.lower(), [rephrased.lower()], must_exist=True, must_unique=False
-                )
-            except ValueError:
-                pass
-            else:
-                stats_keeper.append(stats_to_record(original_text, rephrased, result_with_spans, shortcut_used=True))
-                logging.debug(f'Shortcut used!')
-                print(json.dumps(result_with_spans))
-                continue
+        # check if we have a good match already, no need for LLM:
+        try:
+            result_with_spans = find_spans_for_multiquote(
+                original_text.lower(), [rephrased.lower()], must_exist=True, must_unique=False
+            )
+        except ValueError:
+            pass
+        else:
+            stats_keeper.append(stats_to_record(original_text, rephrased, result_with_spans, shortcut_used=True))
+            logging.debug(f'Shortcut used!')
+            print(json.dumps(result_with_spans))
+            continue
 
+        # Otherwise, use LLM to figure it out:
         result_with_spans = do_prompt(original_text=original_text, rephrased=rephrased)
         stats_keeper.append(stats_to_record(original_text, rephrased, result_with_spans))
         print(json.dumps(result_with_spans))
@@ -96,14 +98,22 @@ def main():
     log_stats_summary(stats_keeper)
 
 
-def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephrased, force_json=False, sep='...'):
+def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephrased, force_json=False, sep='...') -> list[dict]:
+    """
+    Kinda large, but convenient wrapper function.
+
+    Fills the prompt template with original text and rephrased, applies the tokenizer to it, feeds it into
+    the generator, with constrained generation using either json or sep.
+
+    Returns a list of spans (dictionaries) with keys start, end, and text.
+    """
 
     prompt = prompt_template.format(original=original_text, rephrased=rephrased)
     original_text = original_text.replace('"', '\"')  # to avoid JSON problems
 
     inputs = tokenizer.encode(prompt, return_tensors="pt")
-    lp = LogitsProcessorForMultiQuote(original_text, tokenizer, prompt_length=inputs.shape[-1],
-                                      force_json_response=force_json, sep=sep)
+    lp = LogitsProcessorForQuotes(original_text, tokenizer, prompt_length=inputs.shape[-1],
+                                  force_json_response=force_json, sep=sep)
 
     try:
         response = generator(inputs, logits_processor=LogitsProcessorList([lp]))
@@ -113,6 +123,7 @@ def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephr
 
     result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
 
+    # Some edge cases:
     if len(response) >= MAX_TOKENS:
         logging.warning('Response at MAX_TOKENS, a currently hard-coded limit (but feel free to edit the source); '
                         'this should not really happen and means the response is probably truncated/bad.')
@@ -130,13 +141,26 @@ def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephr
 
 
 def create_prompt_template(system_prompt: str, prompt_template: str, examples: list[dict], json_format=False, sep='...') -> str:
+    """
+    Creates the prompt template, consisting of system prompt, few-shot examples (if any), and the actual prompt.
+    The final prompt will have remaining slots {original} and {rephrased}, to be filled by format.
+
+    :param json_format: to use json format: `["the quick", "fox jumped"]`
+    :param sep: if not json format, uses sep (default ...) to separate quotes: `the quick... fox jumped`
+    :return: A string with slots {original} and {rephrased}.
+    """
     prompt_lines = [system_prompt]
     n_example = 0
     for n_example, example in enumerate(examples, start=1):
         response_str = json.dumps(example['response']) if json_format else f'{sep} '.join(example['response'])
-        example_prompt = prompt_template.format(n=n_example, original=example['original'], rephrased=example['rephrased'], response=response_str).replace('{', '{{').replace('}', '}}')
+        example_prompt = prompt_template.format(
+            n=n_example, original=example['original'],
+            rephrased=example['rephrased'], response=response_str
+        ).replace('{', '{{').replace('}', '}}')  # to make them survive format string
         prompt_lines.append(example_prompt)
-    prompt_lines.append(prompt_template.format(n=n_example+1, original='{original}', rephrased='{rephrased}', response=''))
+    prompt_lines.append(
+        prompt_template.format(n=n_example+1, original='{original}', rephrased='{rephrased}', response='')
+    )
 
     full_prompt_template = '\n\n'.join(prompt_lines)
     return full_prompt_template
