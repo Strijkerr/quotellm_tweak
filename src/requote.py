@@ -17,8 +17,8 @@ DEFAULT_PROMPT_INFO = {
     'system_prompt': "We're going to find literal quotations that support a specific, extracted meaning component.",
     'prompt_template': """## Example {n}.
 Original text: "{original}"
-Extracted meaning component, rephrased: "{rephrased}"
-The meaning component is conveyed by (literal quoted spans): {response}""",
+Extracted meaning component, rephrased: "{extracted}"
+The meaning component is conveyed by (literal quoted spans): {quotes}""",
     'examples': [], # TODO add default examples
 }
 
@@ -75,33 +75,33 @@ def main():
 
     stats_keeper = []
 
-    for n, (original_text, rephrased) in enumerate(csv.reader(args.file)):
+    for n, (original_text, extracted) in enumerate(csv.reader(args.file)):
         logging.debug(f'----- {n} -----')
         logging.debug(f'Original:  {original_text}')
-        logging.debug(f'Rephrased: {rephrased}')
+        logging.debug(f'Extracted: {extracted}')
 
         # check if we have a good match already, no need for LLM:
         try:
             result_with_spans = find_spans_for_multiquote(
-                original_text.lower(), [rephrased.lower()], must_exist=True, must_unique=False
+                original_text.lower(), [extracted.lower()], must_exist=True, must_unique=False
             )
         except ValueError:
             pass
         else:
-            stats_keeper.append(stats_to_record(original_text, rephrased, result_with_spans, shortcut_used=True))
+            stats_keeper.append(stats_to_record(original_text, extracted, result_with_spans, shortcut_used=True))
             logging.debug(f'Shortcut used!')
             print(json.dumps(result_with_spans))
             continue
 
         # Otherwise, use LLM to figure it out:
-        result_with_spans = do_prompt(original_text=original_text, rephrased=rephrased)
-        stats_keeper.append(stats_to_record(original_text, rephrased, result_with_spans))
+        result_with_spans = do_prompt(original_text=original_text, extracted=extracted)
+        stats_keeper.append(stats_to_record(original_text, extracted, result_with_spans))
         print(json.dumps(result_with_spans))
 
     log_stats_summary(stats_keeper)
 
 
-def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephrased, force_json=False, sep='...', num_beams=1) -> list[dict] | None:
+def prompt_for_quote(generator, tokenizer, prompt_template, original_text, extracted, force_json=False, sep='...', num_beams=1) -> list[dict] | None:
     """
     Kinda large, but convenient wrapper function.
 
@@ -111,7 +111,7 @@ def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephr
     Returns a list of spans (dictionaries) with keys start, end, and text.
     """
 
-    prompt = prompt_template.format(original=original_text, rephrased=rephrased)
+    prompt = prompt_template.format(original=original_text, extracted=extracted)
     original_text = original_text.replace('"', '\"')  # to avoid JSON problems
 
     inputs = tokenizer.encode(prompt, return_tensors="pt").to('cuda' if torch.cuda.is_available() else 'cpu')
@@ -127,7 +127,7 @@ def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephr
             else:
                 break
         else:
-            logging.warning(f'Unavoidable CUDA out of memory for "{rephrased}"; returning empty list.')
+            logging.warning(f'Unavoidable CUDA out of memory for "{extracted}"; returning empty list.')
             return []
 
     result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
@@ -161,14 +161,14 @@ def create_prompt_template(system_prompt: str, prompt_template: str, examples: l
     prompt_lines = [system_prompt]
     n_example = 0
     for n_example, example in enumerate(examples, start=1):
-        response_str = json.dumps(example['response']) if json_format else f'{sep} '.join(example['response'])
+        response_str = json.dumps(example['quotes']) if json_format else f'{sep} '.join(example['quotes'])
         example_prompt = prompt_template.format(
             n=n_example, original=example['original'],
-            rephrased=example['rephrased'], response=response_str
+            extracted=example['extracted'], quotes=response_str
         ).replace('{', '{{').replace('}', '}}')  # to make them survive format string
         prompt_lines.append(example_prompt)
     prompt_lines.append(
-        prompt_template.format(n=n_example+1, original='{original}', rephrased='{rephrased}', response='')
+        prompt_template.format(n=n_example+1, original='{original}', extracted='{extracted}', quotes='')
     )
 
     full_prompt_template = '\n\n'.join(prompt_lines)
