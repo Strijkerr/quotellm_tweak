@@ -60,7 +60,7 @@ def main():
     logging.info(f'Prompt template: {prompt_template}')
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, clean_up_tokenization_spaces=False)  # clean up changes e.g. " ." to "."
-    model = AutoModelForCausalLM.from_pretrained(args.model).to('cuda' if torch.cuda.is_available() else 'cpu')
+    model = AutoModelForCausalLM.from_pretrained(args.model)    # no explicit to(cuda) for a quantized model
     generator = functools.partial(model.generate, max_new_tokens=MAX_TOKENS, do_sample=args.temp is not None,
                                   num_beams=args.beams, temperature=args.temp, top_k=args.topk, top_p=args.topp,
                                   length_penalty=args.quote_verbosity)
