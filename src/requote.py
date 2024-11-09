@@ -63,14 +63,15 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(args.model)    # no explicit to(cuda) for a quantized model
     model.eval()
     generator = functools.partial(model.generate, max_new_tokens=MAX_TOKENS, do_sample=args.temp is not None,
-                                  num_beams=args.beams, temperature=args.temp, top_k=args.topk, top_p=args.topp,
+                                  temperature=args.temp, top_k=args.topk, top_p=args.topp,
                                   length_penalty=args.quote_verbosity)
     do_prompt = functools.partial(prompt_for_quote,
                                   generator=generator,
                                   tokenizer=tokenizer,
                                   prompt_template=prompt_template,
                                   force_json=args.json,
-                                  sep=args.sep)
+                                  sep=args.sep,
+                                  num_beams=args.beams)
 
     stats_keeper = []
 
@@ -100,7 +101,7 @@ def main():
     log_stats_summary(stats_keeper)
 
 
-def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephrased, force_json=False, sep='...') -> list[dict]:
+def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephrased, force_json=False, sep='...', num_beams=1) -> list[dict] | None:
     """
     Kinda large, but convenient wrapper function.
 
@@ -118,7 +119,16 @@ def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephr
                                   force_json_response=force_json, sep=sep)
 
     with torch.no_grad():
-        response = generator(inputs, logits_processor=LogitsProcessorList([lp]))
+        for n in range(num_beams, 0, -1):
+            try:
+                response = generator(inputs, logits_processor=LogitsProcessorList([lp]), num_beams=n)
+            except torch.cuda.OutOfMemoryError:
+                logging.warning(f'CUDA out of memory ({n} beams).')
+            else:
+                break
+        else:
+            logging.warning(f'Unavoidable CUDA out of memory for "{rephrased}"; returning empty list.')
+            return []
 
     result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
 
