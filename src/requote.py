@@ -10,6 +10,7 @@ import functools
 import json
 import itertools
 import numpy
+import gc
 
 MAX_TOKENS = 500
 DEFAULT_PROMPT_INFO = {
@@ -111,19 +112,21 @@ def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephr
     prompt = prompt_template.format(original=original_text, rephrased=rephrased)
     original_text = original_text.replace('"', '\"')  # to avoid JSON problems
 
-    inputs = tokenizer.encode(prompt, return_tensors="pt")
+    inputs = tokenizer.encode(prompt, return_tensors="pt").to_device('cuda')
     lp = LogitsProcessorForQuotes(original_text, tokenizer, prompt_length=inputs.shape[-1],
                                   force_json_response=force_json, sep=sep)
 
     try:
         response = generator(inputs, logits_processor=LogitsProcessorList([lp]))
     except torch.cuda.OutOfMemoryError:
-        try:
-            logging.warning('CUDA out of memory: Retrying with cache offloaded.')
-            response = generator(inputs, logits_processor=LogitsProcessorList([lp]), cache_implementation="offloaded")
-        except torch.cuda.OutOfMemoryError:
-            logging.warning('CUDA out of memory again: Retrying with cache disabled.')
-            response = generator(inputs, logits_processor=LogitsProcessorList([lp]), use_cache=False)
+        logging.warning('CUDA out of memory: Retry cuda.empty_cache() and use_cache=False.')
+        gc.collect()
+        torch.cuda.empty_cache()
+        # try:
+        #     response = generator(inputs, logits_processor=LogitsProcessorList([lp]), cache_implementation="offloaded")
+        # except torch.cuda.OutOfMemoryError:
+        #     logging.warning('CUDA out of memory again: Retrying with cache disabled.')
+        response = generator(inputs, logits_processor=LogitsProcessorList([lp]), use_cache=False)
 
 
     result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
