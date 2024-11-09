@@ -61,6 +61,7 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, clean_up_tokenization_spaces=False)  # clean up changes e.g. " ." to "."
     model = AutoModelForCausalLM.from_pretrained(args.model)    # no explicit to(cuda) for a quantized model
+    model.eval()
     generator = functools.partial(model.generate, max_new_tokens=MAX_TOKENS, do_sample=args.temp is not None,
                                   num_beams=args.beams, temperature=args.temp, top_k=args.topk, top_p=args.topp,
                                   length_penalty=args.quote_verbosity)
@@ -116,18 +117,8 @@ def prompt_for_quote(generator, tokenizer, prompt_template, original_text, rephr
     lp = LogitsProcessorForQuotes(original_text, tokenizer, prompt_length=inputs.shape[-1],
                                   force_json_response=force_json, sep=sep)
 
-    try:
+    with torch.no_grad():
         response = generator(inputs, logits_processor=LogitsProcessorList([lp]))
-    except torch.cuda.OutOfMemoryError:
-        logging.warning('CUDA out of memory: Retry cuda.empty_cache() and use_cache=False.')
-        gc.collect()
-        torch.cuda.empty_cache()
-        # try:
-        #     response = generator(inputs, logits_processor=LogitsProcessorList([lp]), cache_implementation="offloaded")
-        # except torch.cuda.OutOfMemoryError:
-        #     logging.warning('CUDA out of memory again: Retrying with cache disabled.')
-        response = generator(inputs, logits_processor=LogitsProcessorList([lp]), use_cache=False)
-
 
     result_str = tokenizer.decode(response[0, inputs.shape[-1]:], skip_special_tokens=True)
 
