@@ -33,7 +33,7 @@ _Caveat 2: While this method guarantees that the LLM responds with exact substri
 pip install git+https://github.com/mwestera/quotellm
 ```
 
-This makes available the `quotellm` module, from which you can import the class `LogitsProcessorForQuotes`, from which you can import the class `LogitsProcessorForQuotes`. This class can be instantiated (for a source text to quote from, and a tokenizer), and fed into the `transformers` library's `model.generate` function via its `logits_processor` param. See `requote.py` for an example.
+This makes available the `quotellm` module, from which you can import the class `LogitsProcessorForQuotes`. This class can be instantiated (for a source text to quote from, and a tokenizer), and fed into the `transformers` library's `model.generate` function via its `logits_processor` param. See `requote.py` for an example.
 
 It also makes available the `requote` command-line interface, that takes pairs of source texts and extracted info as input, and outputs the exact supporting spans.
 
