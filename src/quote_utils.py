@@ -216,7 +216,7 @@ def get_json_part_ids(tokenizer):
     return json_part_ids
 
 
-def find_spans_for_multiquote(original: str, quotes: list[str], must_exist=True, must_unique=False) -> list[dict]:
+def find_spans_for_multiquote(original: str, quotes: list[str], must_exist=True, must_unique=False, case_sensitive=True) -> list[dict]:
     """
     Given a list of quotes (e.g., as obtained from the LLM), localize the corresponding spans in the original text.
 
@@ -243,7 +243,7 @@ def find_spans_for_multiquote(original: str, quotes: list[str], must_exist=True,
     >>> find_spans_for_multiquote("the quick brown fox jumped over the quick brown dog onto another fox", ["the hairy duck"], must_exist=False)
     [{'start': None, 'end': None, 'text': 'the hairy duck'}]
     """
-    matches = (re.finditer(re.escape(quote), original) for quote in quotes)
+    matches = (re.finditer(re.escape(quote), original, flags=re.IGNORECASE if not case_sensitive else re.NOFLAG) for quote in quotes)
 
     candidate_multimatches = []
     for multimatch in itertools.product(*matches):

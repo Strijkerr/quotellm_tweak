@@ -83,7 +83,7 @@ def main():
         # check if we have a good match already, no need for LLM:
         try:
             result_with_spans = find_spans_for_multiquote(
-                original_text.lower(), [extracted.lower()], must_exist=True, must_unique=False
+                original_text, [extracted], must_exist=True, must_unique=False, case_sensitive=False
             )
         except ValueError:
             pass
