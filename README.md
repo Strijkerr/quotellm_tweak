@@ -20,7 +20,7 @@ Output (JSON list of supporting quotes):
 
 Large Language Models aren't great at providing literal quotes. They can mess up word order and punctuation, and they cannot reliably count words or characters. Retrying the generation until a proper quote is generated is costly and not guaranteed, while employing 'fuzzy matching' find the corresponding exact quotes can lead to false positives.
 
-A better approach is _constrained generation_: forcing the LLM to stick to spans from the original text. This turned out to be non-trivial with existing libraries (`transformers`, `outlines`). The current module, `QuoteLLM`, implements a basic solution, also supporting discontinuous spans (like `...` in the above example).
+A better approach is _constrained generation_: forcing the LLM to stick to spans from the original text. This turned out to be non-trivial with existing libraries (`transformers`, `outlines`). The current module, `QuoteLLM`, implements a basic solution, also supporting discontinuous spans (like the above example).
 
 _Caveat 1: Currently tested only with `unsloth/llama-3-70b-bnb-4bit`, though any model should work whose tokenizer handles spaces in the same way (namely, as part of word-piece tokens)._
 
