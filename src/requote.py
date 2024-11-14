@@ -12,6 +12,9 @@ import itertools
 import numpy
 import gc
 
+from typing import Iterable, Generator
+
+
 MAX_TOKENS = 500
 DEFAULT_PROMPT_INFO = {
     'system_prompt': "We're going to find literal quotations that support a specific, extracted meaning component.",
@@ -23,7 +26,7 @@ The meaning component is conveyed by (literal quoted spans): {quotes}""",
 }
 
 
-def main():
+def cli():
 
     argparser = argparse.ArgumentParser(description='CLI for matching paraphrases of components of a text, to literal quotes in that text.')
     argparser.add_argument('file', nargs='?', type=argparse.FileType('r'), default=sys.stdin, help='Input file with pairs original,rephrased per line (csv); when omitted read from stdin.')
@@ -55,27 +58,56 @@ def main():
     if not args.prompt:
         logging.warning('Are you sure you don\'t want to specify a custom prompt .json file (--prompt), perhaps containing few-shot examples?')
 
-    prompt_template = create_prompt_template(**(json.load(args.prompt) if args.prompt else DEFAULT_PROMPT_INFO), json_format=args.json, sep=args.sep)
-
-    logging.info(f'Prompt template: {prompt_template}')
+    prompt_info = json.load(args.prompt) if args.prompt else DEFAULT_PROMPT_INFO
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, clean_up_tokenization_spaces=False)  # clean up changes e.g. " ." to "."
     model = AutoModelForCausalLM.from_pretrained(args.model)    # no explicit to(cuda) for a quantized model
     model.eval()
-    generator = functools.partial(model.generate, max_new_tokens=MAX_TOKENS, do_sample=args.temp is not None,
-                                  temperature=args.temp, top_k=args.topk, top_p=args.topp,
-                                  length_penalty=args.quote_verbosity)
+
+    generate_kwargs = {
+        'max_new_tokens': MAX_TOKENS, 'do_sample': args.temp is not None,
+        'temperature': args.temp, 'top_k': args.topk, 'top_p': args.topp,
+    }
+
+    for result in requote(csv.reader(args.file), tokenizer, model, prompt_info, num_beams=args.beams, force_json=args.json, sep=args.sep, quote_verbosity=args.quote_verbosity, **generate_kwargs):
+        print(json.dumps(result))
+
+
+def requote(items: Iterable[tuple[str, str]],
+            tokenizer,
+            model,
+            prompt_info: dict = DEFAULT_PROMPT_INFO,
+            num_beams: int = 1,
+            force_json: bool = True,
+            sep: str = '...',
+            quote_verbosity: float = 0.0,
+            **generate_kwargs
+            ) -> Generator[dict, None, None]:
+
+    """
+    - items are pairs of (original text, extracted/rephrased component).
+    - generate_kwargs can specify max_new_tokens, do_sample, temperature, top_k, top_p -- and other keywords, to be
+      passed into model.generate.
+    see the command-line interface for more explanations.
+    """
+
+    generate_kwargs['length_penalty'] = quote_verbosity
+
+    prompt_template = create_prompt_template(**prompt_info, json_format=force_json, sep=sep)
+    logging.info(f'Prompt template: {prompt_template}')
+
     do_prompt = functools.partial(prompt_for_quote,
-                                  generator=generator,
+                                  generator=functools.partial(model.generate, **generate_kwargs),
                                   tokenizer=tokenizer,
                                   prompt_template=prompt_template,
-                                  force_json=args.json,
-                                  sep=args.sep,
-                                  num_beams=args.beams)
+                                  force_json=force_json,
+                                  sep=sep,
+                                  num_beams=num_beams,
+                                  )
 
     stats_keeper = []
 
-    for n, (original_text, extracted) in enumerate(csv.reader(args.file)):
+    for n, (original_text, extracted) in enumerate(items):
         logging.debug(f'----- {n} -----')
         logging.debug(f'Original:  {original_text}')
         logging.debug(f'Extracted: {extracted}')
@@ -90,13 +122,13 @@ def main():
         else:
             stats_keeper.append(stats_to_record(original_text, extracted, result_with_spans, shortcut_used=True))
             logging.debug(f'Shortcut used!')
-            print(json.dumps(result_with_spans))
+            yield result_with_spans
             continue
 
         # Otherwise, use LLM to figure it out:
         result_with_spans = do_prompt(original_text=original_text, extracted=extracted)
         stats_keeper.append(stats_to_record(original_text, extracted, result_with_spans))
-        print(json.dumps(result_with_spans))
+        yield result_with_spans
 
     log_stats_summary(stats_keeper)
 
@@ -201,5 +233,5 @@ def log_stats_summary(stats_keeper: list[dict]) -> None:
 
 if __name__ == '__main__':
 
-    main()
+    cli()
 
