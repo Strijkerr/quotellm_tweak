@@ -243,7 +243,7 @@ def find_spans_for_multiquote(original: str, quotes: list[str], must_exist=True,
     >>> find_spans_for_multiquote("the quick brown fox jumped over the quick brown dog onto another fox", ["the hairy duck"], must_exist=False)
     [{'start': None, 'end': None, 'text': 'the hairy duck'}]
     """
-    matches = (re.finditer(re.escape(quote), original, flags=re.IGNORECASE if not case_sensitive else re.NOFLAG) for quote in quotes)
+    matches = (re.finditer(re.escape(quote), original, flags=re.IGNORECASE if not case_sensitive else 0) for quote in quotes)
 
     candidate_multimatches = []
     for multimatch in itertools.product(*matches):
